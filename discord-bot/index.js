@@ -62,6 +62,12 @@ client.once("ready", async () => {
           .setRequired(false)
           .setMinValue(2)
           .setMaxValue(20),
+      )
+      .addStringOption((option) =>
+        option
+          .setName("規定")
+          .setDescription("房間規定 (例如: 限有麥、不限段位)")
+          .setRequired(false),
       ),
   ].map((command) => command.toJSON());
 
@@ -85,6 +91,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "開車") {
     const gameName = interaction.options.getString("遊戲");
     const maxPlayers = interaction.options.getInteger("人數") || 5;
+    const rules = interaction.options.getString("規定") || "無";
     const driver = interaction.user;
 
     // 建立房間資料
@@ -93,6 +100,7 @@ client.on("interactionCreate", async (interaction) => {
       id: roomId,
       game: gameName,
       maxPlayers: maxPlayers,
+      rules: rules,
       driver: driver.id,
       players: [driver.id],
       channelId: interaction.channelId,
@@ -113,6 +121,7 @@ client.on("interactionCreate", async (interaction) => {
           inline: true,
         },
         { name: "狀態", value: "🟢 招募中", inline: true },
+        { name: "📋 規定", value: rules, inline: false },
       )
       .setTimestamp()
       .setFooter({ text: "PersonaLink Bot" });
@@ -188,6 +197,7 @@ client.on("interactionCreate", async (interaction) => {
           inline: true,
         },
         { name: "狀態", value: isFull ? "🔴 已滿" : "🟢 招募中", inline: true },
+        { name: "📋 規定", value: roomData.rules || "無", inline: false },
         {
           name: "隊員名單",
           value: roomData.players.map((id) => `<@${id}>`).join("\n"),
@@ -252,6 +262,7 @@ client.on("interactionCreate", async (interaction) => {
           inline: true,
         },
         { name: "狀態", value: "🟢 招募中", inline: true },
+        { name: "📋 規定", value: roomData.rules || "無", inline: false },
         {
           name: "隊員名單",
           value:
