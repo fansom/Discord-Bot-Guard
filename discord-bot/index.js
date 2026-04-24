@@ -1,5 +1,5 @@
 // ===== PersonaLink Discord Bot =====
-// 快速自動發車系統
+// 跨伺服器自動發車系統
 
 require("dotenv").config();
 const {
@@ -13,6 +13,8 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  PermissionFlagsBits,
+  ChannelType,
   REST,
   Routes,
 } = require("discord.js");
@@ -32,8 +34,33 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ===== 資料儲存 =====
-let activeRooms = new Map(); // 房間資料
-let pendingRooms = new Map(); // 司機開車前暫存的房間參數 (userId -> {game, maxPlayers, rules})
+let activeRooms = new Map(); // roomId -> roomData
+let pendingRooms = new Map(); // userId -> {gameName, maxPlayers, rules}
+
+// ===== 持久化設定（每個伺服器的廣播頻道） =====
+const SETTINGS_FILE = "settings.json";
+let settings = { guilds: {} }; // { guilds: { [guildId]: { broadcastChannelId } } }
+
+function loadSettings() {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      settings = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"));
+      if (!settings.guilds) settings.guilds = {};
+    }
+  } catch (e) {
+    console.error("❌ settings.json 讀取失敗:", e.message);
+  }
+}
+
+function saveSettings() {
+  try {
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
+  } catch (e) {
+    console.error("❌ settings.json 儲存失敗:", e.message);
+  }
+}
+
+loadSettings();
 
 // ===== 自動補全建議清單 =====
 const GAME_SUGGESTIONS = [
@@ -95,30 +122,51 @@ client.once("ready", async () => {
   const commands = [
     new SlashCommandBuilder()
       .setName("開車")
-      .setDescription("建立遊戲房間，開始揪團！")
-      .addStringOption((option) =>
-        option
+      .setDescription("建立遊戲房間，跨伺服器揪團！")
+      .addStringOption((o) =>
+        o
           .setName("遊戲")
           .setDescription("遊戲名稱 (可從建議選擇或自行輸入)")
           .setRequired(false)
           .setAutocomplete(true),
       )
-      .addIntegerOption((option) =>
-        option
+      .addIntegerOption((o) =>
+        o
           .setName("人數")
           .setDescription("需要多少人 (預設: 5)")
           .setRequired(false)
           .setMinValue(2)
           .setMaxValue(20),
       )
-      .addStringOption((option) =>
-        option
+      .addStringOption((o) =>
+        o
           .setName("規定")
           .setDescription("房間規定 (可從建議選擇或自行輸入)")
           .setRequired(false)
           .setAutocomplete(true),
       ),
-  ].map((command) => command.toJSON());
+
+    new SlashCommandBuilder()
+      .setName("設定發車頻道")
+      .setDescription("設定本伺服器接收跨伺服器房間的頻道（管理員）")
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+      .addChannelOption((o) =>
+        o
+          .setName("頻道")
+          .setDescription("接收跨伺服器發車公告的文字頻道")
+          .addChannelTypes(ChannelType.GuildText)
+          .setRequired(true),
+      ),
+
+    new SlashCommandBuilder()
+      .setName("停用跨伺服器")
+      .setDescription("停止本伺服器接收跨伺服器房間（管理員）")
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+
+    new SlashCommandBuilder()
+      .setName("跨伺服器狀態")
+      .setDescription("查看本伺服器目前的跨伺服器設定"),
+  ].map((c) => c.toJSON());
 
   const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
@@ -149,7 +197,7 @@ function buildEmbed(roomData, isFull = false) {
       .map((p) => formatPlayerLine(p, roomData.driver))
       .join("\n") || "尚無隊員";
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setColor(isFull ? "#ff0000" : "#00ff00")
     .setTitle(`🚗 ${roomData.game} - ${isFull ? "已滿！" : "發車中！"}`)
     .setDescription(
@@ -168,7 +216,11 @@ function buildEmbed(roomData, isFull = false) {
       { name: "隊員名單", value: playerLines },
     )
     .setTimestamp()
-    .setFooter({ text: "PersonaLink Bot" });
+    .setFooter({
+      text: `來自 ${roomData.originGuildName} · PersonaLink`,
+    });
+
+  return embed;
 }
 
 function buildButtons(roomId, isFull) {
@@ -216,6 +268,78 @@ function buildPlayerInfoModal(customId, title) {
   return modal;
 }
 
+// ===== 跨伺服器廣播 =====
+function getBroadcastTargets(excludeGuildId) {
+  const targets = [];
+  for (const [gid, conf] of Object.entries(settings.guilds)) {
+    if (gid === excludeGuildId) continue;
+    if (conf && conf.broadcastChannelId) {
+      targets.push({ guildId: gid, channelId: conf.broadcastChannelId });
+    }
+  }
+  return targets;
+}
+
+async function broadcastNewRoom(roomData) {
+  const embed = buildEmbed(roomData, false);
+  const components = buildButtons(roomData.id, false);
+  const targets = getBroadcastTargets(roomData.originGuildId);
+
+  await Promise.all(
+    targets.map(async (target) => {
+      try {
+        const guild = await client.guilds.fetch(target.guildId);
+        const channel = await guild.channels.fetch(target.channelId);
+        if (!channel || !channel.isTextBased()) return;
+        const msg = await channel.send({ embeds: [embed], components });
+        roomData.messages.push({
+          guildId: target.guildId,
+          channelId: target.channelId,
+          messageId: msg.id,
+        });
+      } catch (e) {
+        console.error(`⚠️ 廣播至 guild ${target.guildId} 失敗:`, e.message);
+      }
+    }),
+  );
+}
+
+async function updateAllRoomMessages(roomData, isFull) {
+  const embed = buildEmbed(roomData, isFull);
+  const components = buildButtons(roomData.id, isFull);
+
+  await Promise.all(
+    roomData.messages.map(async (ref) => {
+      try {
+        const guild = await client.guilds.fetch(ref.guildId);
+        const channel = await guild.channels.fetch(ref.channelId);
+        const msg = await channel.messages.fetch(ref.messageId);
+        await msg.edit({ embeds: [embed], components });
+      } catch (e) {
+        console.error(
+          `⚠️ 更新訊息失敗 ${ref.guildId}/${ref.channelId}/${ref.messageId}:`,
+          e.message,
+        );
+      }
+    }),
+  );
+}
+
+async function closeAllRoomMessages(roomData, content) {
+  await Promise.all(
+    roomData.messages.map(async (ref) => {
+      try {
+        const guild = await client.guilds.fetch(ref.guildId);
+        const channel = await guild.channels.fetch(ref.channelId);
+        const msg = await channel.messages.fetch(ref.messageId);
+        await msg.edit({ content, embeds: [], components: [] });
+      } catch (e) {
+        console.error(`⚠️ 關閉訊息失敗:`, e.message);
+      }
+    }),
+  );
+}
+
 // ===== 自動補全處理 =====
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isAutocomplete()) return;
@@ -236,21 +360,90 @@ client.on("interactionCreate", async (interaction) => {
   );
 });
 
-// ===== /開車 指令處理 =====
+// ===== 斜線指令處理 =====
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
-  if (interaction.commandName !== "開車") return;
 
-  const gameName = interaction.options.getString("遊戲") || "未指定";
-  const maxPlayers = interaction.options.getInteger("人數") || 5;
-  const rules = interaction.options.getString("規定") || "無";
+  // === /開車 ===
+  if (interaction.commandName === "開車") {
+    if (!interaction.guildId) {
+      return interaction.reply({
+        content: "❌ 請在伺服器頻道內使用此指令",
+        ephemeral: true,
+      });
+    }
+    const gameName = interaction.options.getString("遊戲") || "未指定";
+    const maxPlayers = interaction.options.getInteger("人數") || 5;
+    const rules = interaction.options.getString("規定") || "無";
 
-  // 暫存房間參數，待 Modal 提交時取用
-  pendingRooms.set(interaction.user.id, { gameName, maxPlayers, rules });
+    pendingRooms.set(interaction.user.id, { gameName, maxPlayers, rules });
+    return interaction.showModal(
+      buildPlayerInfoModal("create_room_modal", "🚗 開車前 - 填寫你的資料"),
+    );
+  }
 
-  await interaction.showModal(
-    buildPlayerInfoModal("create_room_modal", "🚗 開車前 - 填寫你的資料"),
-  );
+  // === /設定發車頻道 ===
+  if (interaction.commandName === "設定發車頻道") {
+    if (!interaction.guildId) {
+      return interaction.reply({
+        content: "❌ 請在伺服器內使用此指令",
+        ephemeral: true,
+      });
+    }
+    const channel = interaction.options.getChannel("頻道");
+    if (!settings.guilds[interaction.guildId]) {
+      settings.guilds[interaction.guildId] = {};
+    }
+    settings.guilds[interaction.guildId].broadcastChannelId = channel.id;
+    saveSettings();
+
+    return interaction.reply({
+      content: `✅ 跨伺服器發車已開啟！房間將會推送到 <#${channel.id}>`,
+      ephemeral: true,
+    });
+  }
+
+  // === /停用跨伺服器 ===
+  if (interaction.commandName === "停用跨伺服器") {
+    if (!interaction.guildId) {
+      return interaction.reply({
+        content: "❌ 請在伺服器內使用此指令",
+        ephemeral: true,
+      });
+    }
+    if (settings.guilds[interaction.guildId]) {
+      delete settings.guilds[interaction.guildId].broadcastChannelId;
+      saveSettings();
+    }
+    return interaction.reply({
+      content: "🛑 已停用跨伺服器功能，本伺服器不再接收外部房間",
+      ephemeral: true,
+    });
+  }
+
+  // === /跨伺服器狀態 ===
+  if (interaction.commandName === "跨伺服器狀態") {
+    const conf = settings.guilds[interaction.guildId];
+    const enabledGuilds = Object.entries(settings.guilds).filter(
+      ([, c]) => c && c.broadcastChannelId,
+    ).length;
+
+    if (conf && conf.broadcastChannelId) {
+      return interaction.reply({
+        content:
+          `🟢 **本伺服器**：已開啟，發車頻道 <#${conf.broadcastChannelId}>\n` +
+          `🌐 **目前共 ${enabledGuilds} 個伺服器**啟用跨伺服器功能`,
+        ephemeral: true,
+      });
+    } else {
+      return interaction.reply({
+        content:
+          `⚪ **本伺服器**：未開啟（用 \`/設定發車頻道\` 開啟）\n` +
+          `🌐 目前共 ${enabledGuilds} 個伺服器啟用跨伺服器功能`,
+        ephemeral: true,
+      });
+    }
+  }
 });
 
 // ===== Modal 提交處理 =====
@@ -274,6 +467,7 @@ client.on("interactionCreate", async (interaction) => {
       interaction.fields.getTextInputValue("rank").trim() || "未填寫";
     const driver = interaction.user;
 
+    const originGuild = interaction.guild;
     const roomId = `${interaction.channelId}-${Date.now()}`;
     const roomData = {
       id: roomId,
@@ -282,26 +476,38 @@ client.on("interactionCreate", async (interaction) => {
       rules: pending.rules,
       driver: driver.id,
       players: [
-        {
-          id: driver.id,
-          username: driver.username,
-          gameId,
-          rank,
-        },
+        { id: driver.id, username: driver.username, gameId, rank },
       ],
-      channelId: interaction.channelId,
+      originGuildId: originGuild.id,
+      originGuildName: originGuild.name,
+      originChannelId: interaction.channelId,
+      messages: [],
       createdAt: new Date().toISOString(),
     };
 
     activeRooms.set(roomId, roomData);
 
+    // 1) 在開車的原頻道回覆
     await interaction.reply({
       embeds: [buildEmbed(roomData, false)],
       components: buildButtons(roomId, false),
     });
+    const originMsg = await interaction.fetchReply();
+    roomData.messages.push({
+      guildId: originGuild.id,
+      channelId: interaction.channelId,
+      messageId: originMsg.id,
+    });
 
-    const message = await interaction.fetchReply();
-    roomData.messageId = message.id;
+    // 2) 廣播至其他啟用跨伺服器的伺服器
+    const targetCount = getBroadcastTargets(originGuild.id).length;
+    await broadcastNewRoom(roomData);
+    if (targetCount > 0) {
+      await interaction.followUp({
+        content: `🌐 已同步發送至 **${roomData.messages.length - 1}** 個其他伺服器`,
+        ephemeral: true,
+      });
+    }
     return;
   }
 
@@ -342,18 +548,12 @@ client.on("interactionCreate", async (interaction) => {
 
     const isFull = roomData.players.length >= roomData.maxPlayers;
 
-    // 更新原本的房間公告訊息
-    if (interaction.message) {
-      await interaction.message.edit({
-        embeds: [buildEmbed(roomData, isFull)],
-        components: buildButtons(roomId, isFull),
-      });
-    }
-
     await interaction.reply({
       content: `✅ 已加入 **${roomData.game}** 隊伍！`,
       ephemeral: true,
     });
+
+    await updateAllRoomMessages(roomData, isFull);
 
     if (isFull) {
       saveLog(roomData);
@@ -381,7 +581,7 @@ client.on("interactionCreate", async (interaction) => {
 
   const userId = interaction.user.id;
 
-  // === 加入排隊 → 彈出 Modal ===
+  // === 加入排隊 → 跳出 Modal ===
   if (action === "join") {
     if (roomData.players.some((p) => p.id === userId)) {
       return interaction.reply({
@@ -408,31 +608,39 @@ client.on("interactionCreate", async (interaction) => {
 
     if (userId === roomData.driver) {
       activeRooms.delete(roomId);
-      return interaction.update({
-        content: "🛑 司機已取消發車，房間關閉！",
-        embeds: [],
-        components: [],
+      await interaction.reply({
+        content: "🛑 已取消發車，所有伺服器房間將關閉",
+        ephemeral: true,
       });
+      await closeAllRoomMessages(
+        roomData,
+        "🛑 司機已取消發車，房間關閉！",
+      );
+      return;
     }
 
     roomData.players = roomData.players.filter((p) => p.id !== userId);
-    return interaction.update({
-      embeds: [buildEmbed(roomData, false)],
-      components: buildButtons(roomId, false),
+    await interaction.reply({
+      content: `已退出 **${roomData.game}** 隊伍`,
+      ephemeral: true,
     });
+    await updateAllRoomMessages(roomData, false);
+    return;
   }
 
   // === 查看隊員（悄悄話） ===
   if (action === "view") {
     const lines = roomData.players
       .map((p) => {
-        const crown = p.id === roomData.driver ? "👑 司機" : "▫️ 隊員";
-        return `${crown} **${p.username}** <@${p.id}>\n　遊戲ID: \`${p.gameId}\`　段位: \`${p.rank}\``;
+        const role = p.id === roomData.driver ? "👑 司機" : "▫️ 隊員";
+        return `${role} **${p.username}** <@${p.id}>\n　遊戲ID: \`${p.gameId}\`　段位: \`${p.rank}\``;
       })
       .join("\n\n");
 
     return interaction.reply({
-      content: `**🎮 ${roomData.game} 隊員資料 (${roomData.players.length}/${roomData.maxPlayers})**\n\n${lines}`,
+      content:
+        `**🎮 ${roomData.game} 隊員資料 (${roomData.players.length}/${roomData.maxPlayers})**\n` +
+        `🌐 來自：${roomData.originGuildName}\n\n${lines}`,
       ephemeral: true,
     });
   }
@@ -451,6 +659,9 @@ function saveLog(roomData) {
       game: roomData.game,
       rules: roomData.rules,
       players: roomData.players,
+      originGuildName: roomData.originGuildName,
+      originGuildId: roomData.originGuildId,
+      broadcastCount: roomData.messages.length,
       createdAt: roomData.createdAt,
       completedAt: new Date().toISOString(),
     });
