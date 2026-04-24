@@ -1,0 +1,2345 @@
+# PersonaLink V2.0 系統架構設計文件
+
+**版本：** MVP 1.0  
+**更新日期：** 2025-04-24  
+**狀態：** 開發中 - 專注單伺服器 + 跨伺服器招募
+
+---
+
+## 📋 目錄
+
+1. [產品定位與目標](#1-產品定位與目標)
+2. [系統架構總覽](#2-系統架構總覽)
+3. [資料結構設計](#3-資料結構設計)
+4. [核心功能模組](#4-核心功能模組)
+5. [跨伺服器招募架構](#5-跨伺服器招募架構)
+6. [房間生命週期管理](#6-房間生命週期管理)
+7. [事件流程圖](#7-事件流程圖)
+8. [擴展性設計](#8-擴展性設計)
+9. [技術決策與權衡](#9-技術決策與權衡)
+10. [實作檢查清單](#10-實作檢查清單)
+11. [關鍵指標追蹤](#11-關鍵指標追蹤)
+
+---
+
+## 1. 產品定位與目標
+
+### 1.1 產品階段規劃
+
+```
+階段 1：快節奏招募（Week 1-4）- 當前階段
+├─ 目標：打知名度、累積用戶數
+├─ 特性：高頻發車、跨伺服器、自動化
+├─ 技術：JSON 檔案 + In-Memory Storage
+└─ 營收：$0（免費使用）
+
+階段 2：社群戰隊功能（Month 2-3）- 待資料庫解決後
+├─ 目標：吸引固定班底、長期社群
+├─ 特性：戰隊管理、數據追蹤、排程發車
+├─ 技術：資料庫升級（暫緩）
+└─ 營收：$200-500/月（基礎版 + 專業版）
+
+階段 3：HR Tech 整合（Month 4+）- 長期願景
+├─ 目標：成為遊戲人才媒合平台
+├─ 特性：玩家評價、技能認證、履歷系統
+└─ 營收：$1000+/月（企業版 + 抽成）
+```
+
+### 1.2 核心設計原則
+
+1. **現階段優先：快速、簡單、可擴展**
+2. **數據驅動：所有功能都要能追蹤指標**
+3. **模組化：每個功能都可獨立開關**
+4. **向後兼容：新功能不破壞舊數據**
+5. **無資料庫依賴：使用 JSON + In-Memory 完成 MVP**
+
+---
+
+## 2. 系統架構總覽
+
+### 2.1 高層架構圖
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    Discord API                       │
+└─────────────────┬───────────────────────────────────┘
+                  │
+    ┌─────────────┴─────────────┐
+    │                           │
+┌───▼────┐                 ┌────▼────┐
+│ 客戶端  │                 │ 中央伺服器│
+│伺服器A  │                 │(官方招募) │
+└───┬────┘                 └────┬────┘
+    │                           │
+    └─────────┬─────────────────┘
+              │
+    ┌─────────▼──────────┐
+    │   PersonaLink Bot   │
+    │   核心邏輯層        │
+    └─────────┬──────────┘
+              │
+    ┌─────────┴──────────┐
+    │                    │
+┌───▼────┐         ┌─────▼─────┐
+│ 房間管理│         │ 資料持久化 │
+│ 模組   │         │ JSON 檔案  │
+└────────┘         └───────────┘
+```
+
+### 2.2 部署架構（Replit 環境）
+
+```
+Replit 容器
+├─ Node.js Runtime
+├─ Discord.js Client (常駐進程)
+├─ Express Server (Keep-alive)
+├─ In-Memory Storage (activeRooms Map)
+└─ File System
+   ├─ logs.json (發車記錄)
+   ├─ guildSettings.json (伺服器設定)
+   └─ stats.json (統計數據 - 選用)
+
+外部依賴
+├─ Discord API (斜線指令、訊息、按鈕)
+└─ UptimeRobot (監控保活)
+```
+
+---
+
+## 3. 資料結構設計
+
+### 3.1 房間資料模型（RoomData）
+
+儲存位置：**In-Memory Map**（`activeRooms`）
+
+```javascript
+{
+  // ===== 基本資訊 =====
+  id: String,              // 唯一 ID: `${channelId}-${timestamp}`
+  game: String,            // 遊戲名稱
+  maxPlayers: Number,      // 最大人數 (2-20)
+  note: String,            // 備註說明（選填）
+  
+  // ===== 人員 =====
+  driver: String,          // 司機 Discord User ID
+  players: Array<String>,  // 所有隊員 ID（包含司機）
+  
+  // ===== 位置資訊 =====
+  channelId: String,       // 原始頻道 ID
+  messageId: String,       // 原始訊息 ID
+  guildId: String,         // 原始伺服器 ID
+  guildName: String,       // 原始伺服器名稱
+  
+  // ===== 中央伺服器資訊（跨伺服器用）=====
+  centralMessageId: String, // 中央伺服器的訊息 ID（選用）
+  
+  // ===== 狀態管理 =====
+  status: String,          // 'recruiting' | 'full' | 'ending' | 'closed'
+  createdAt: String,       // ISO8601 格式時間戳
+  fullAt: String,          // 人滿時間（選用）
+  closeAt: String,         // 預計關閉時間（選用）
+  
+  // ===== 計時器引用 =====
+  zombieTimer: Number,     // setTimeout 返回的 ID
+  warningTimer: Number,    // setTimeout 返回的 ID
+  closeTimer: Number,      // setTimeout 返回的 ID
+  
+  // ===== 延長機制 =====
+  extendCount: Number      // 已延長次數（0-2）
+}
+```
+
+**範例：**
+```javascript
+{
+  id: "1234567890-1714012800000",
+  game: "傳說對決",
+  maxPlayers: 5,
+  note: "限鑽石以上，要有麥",
+  driver: "987654321",
+  players: ["987654321", "111222333"],
+  channelId: "1234567890",
+  messageId: "9876543210",
+  guildId: "5555555555",
+  guildName: "電競天堂",
+  centralMessageId: "7777777777",
+  status: "recruiting",
+  createdAt: "2025-04-24T10:30:00.000Z",
+  zombieTimer: 12345,
+  extendCount: 0
+}
+```
+
+### 3.2 日誌資料模型（LogEntry）
+
+儲存位置：**logs.json**（檔案系統）
+
+```javascript
+{
+  // ===== 基本資訊 =====
+  game: String,            // 遊戲名稱
+  guildId: String,         // 伺服器 ID
+  guildName: String,       // 伺服器名稱
+  
+  // ===== 人員與時間 =====
+  driver: String,          // 司機 User ID
+  players: Array<String>,  // 所有參與玩家 ID
+  createdAt: String,       // 建立時間 ISO8601
+  completedAt: String,     // 完成時間 ISO8601
+  duration: Number,        // 持續時間（秒）
+  
+  // ===== 統計資訊 =====
+  joinSpeed: Number,       // 招滿速度（秒）- 從建立到人滿的時間
+  finalPlayerCount: Number // 最終人數（可能未滿）
+}
+```
+
+**logs.json 格式：**
+```json
+[
+  {
+    "game": "英雄聯盟",
+    "guildId": "5555555555",
+    "guildName": "電競天堂",
+    "driver": "987654321",
+    "players": ["987654321", "111222333", "444555666", "777888999", "000111222"],
+    "createdAt": "2025-04-24T10:30:00.000Z",
+    "completedAt": "2025-04-24T11:15:00.000Z",
+    "duration": 2700,
+    "joinSpeed": 180,
+    "finalPlayerCount": 5
+  }
+]
+```
+
+### 3.3 伺服器設定模型（GuildSettings）
+
+儲存位置：**guildSettings.json**（檔案系統）
+
+```javascript
+{
+  guildId: String,         // 伺服器 ID（作為 key）
+  inviteUrl: String,       // 伺服器邀請連結
+  recruitChannel: String,  // 預設招募頻道 ID（選用）
+  enabled: Boolean,        // 是否啟用 Bot
+  createdAt: String        // 設定建立時間
+}
+```
+
+**guildSettings.json 格式：**
+```json
+{
+  "5555555555": {
+    "guildId": "5555555555",
+    "inviteUrl": "https://discord.gg/example123",
+    "recruitChannel": "1234567890",
+    "enabled": true,
+    "createdAt": "2025-04-24T10:00:00.000Z"
+  },
+  "6666666666": {
+    "guildId": "6666666666",
+    "inviteUrl": "https://discord.gg/example456",
+    "enabled": true,
+    "createdAt": "2025-04-24T11:00:00.000Z"
+  }
+}
+```
+
+### 3.4 設定檔模型（Config）
+
+儲存位置：**程式碼內建** 或 **.env**
+
+```javascript
+{
+  // ===== 時間設定（毫秒）=====
+  ZOMBIE_ROOM_TIMEOUT: 7200000,      // 2 小時無人加入自動關閉
+  FULL_ROOM_DURATION: 2700000,       // 45 分鐘（人滿後保留時間）
+  WARNING_TIME: 300000,              // 5 分鐘（結束前警告）
+  EXTEND_TIME: 1800000,              // 30 分鐘（每次延長時間）
+  DELETE_DELAY: 600000,              // 10 分鐘（結束後刪除延遲）
+  MAX_EXTENDS: 2,                    // 最多延長次數
+  
+  // ===== 中央伺服器設定 =====
+  CENTRAL_SERVER_ID: String,         // 中央伺服器 ID（從 .env 讀取）
+  RECRUIT_CHANNEL_ID: String,        // 全球招募頻道 ID（從 .env 讀取）
+  
+  // ===== 功能開關 =====
+  ENABLE_CROSS_SERVER: Boolean,      // 啟用跨伺服器（預設 true）
+  ENABLE_AUTO_CLOSE: Boolean,        // 啟用自動關閉（預設 true）
+  
+  // ===== 限制設定 =====
+  MAX_CONCURRENT_ROOMS_PER_USER: 1,  // 每人同時最多房間數
+  MIN_PLAYERS: 2,                    // 最少人數
+  MAX_PLAYERS: 20                    // 最多人數
+}
+```
+
+---
+
+## 4. 核心功能模組
+
+### 4.1 模組拆分架構
+
+```
+PersonaLink Bot
+├─ CommandModule（指令處理）
+│  ├─ /開車 處理器
+│  └─ /設定 處理器（設定邀請連結）
+│
+├─ InteractionModule（互動處理）
+│  └─ 按鈕點擊處理器
+│     ├─ join_roomId（加入排隊）
+│     ├─ leave_roomId（取消排隊）
+│     ├─ extend_roomId（延長時間 - 司機專用）
+│     └─ close_roomId（結束發車 - 司機專用）
+│
+├─ RoomManagerModule（房間管理）
+│  ├─ createRoom(interaction, options)
+│  ├─ joinRoom(roomId, userId)
+│  ├─ leaveRoom(roomId, userId)
+│  ├─ extendRoom(roomId)
+│  ├─ closeRoom(roomId, reason)
+│  └─ getRoomStatus(roomId)
+│
+├─ TimerModule（計時器管理）
+│  ├─ setZombieTimer(roomId)
+│  ├─ setAutoCloseTimer(roomId)
+│  ├─ setWarningTimer(roomId)
+│  └─ clearAllTimers(roomId)
+│
+├─ CrossServerModule（跨伺服器）
+│  ├─ postToCentralServer(roomData, embed, buttons)
+│  ├─ updateCentralMessage(roomData, embed, buttons)
+│  └─ deleteCentralMessage(roomData)
+│
+├─ EmbedBuilderModule（公告生成）
+│  ├─ createRecruitingEmbed(roomData)
+│  ├─ createFullEmbed(roomData)
+│  ├─ createEndingEmbed(roomData)
+│  └─ createClosedEmbed(roomData, reason)
+│
+├─ LoggerModule（資料記錄）
+│  ├─ saveLog(roomData)
+│  ├─ readLogs()
+│  └─ appendLog(logEntry)
+│
+├─ FileManagerModule（檔案管理）
+│  ├─ loadGuildSettings()
+│  ├─ saveGuildSettings(guildId, settings)
+│  ├─ getGuildInviteUrl(guildId)
+│  └─ setGuildInviteUrl(guildId, url)
+│
+└─ ValidationModule（驗證模組）
+   ├─ validateUser(userId, roomId)
+   ├─ validateRoom(roomId)
+   └─ canUserJoin(userId, roomId)
+```
+
+### 4.2 關鍵函數設計
+
+#### 4.2.1 createRoom(interaction, options)
+
+**功能：** 建立新的遊戲房間
+
+**輸入參數：**
+```javascript
+{
+  interaction: Discord.Interaction,
+  options: {
+    game: String,       // 遊戲名稱
+    maxPlayers: Number, // 最大人數
+    note: String        // 備註（選用）
+  }
+}
+```
+
+**執行流程：**
+```
+1. 驗證用戶狀態
+   └─ 檢查是否已有活躍房間（MAX_CONCURRENT_ROOMS_PER_USER）
+
+2. 生成唯一 roomId
+   └─ `${channelId}-${Date.now()}`
+
+3. 建立 roomData 物件
+   └─ 初始化所有必要欄位
+   └─ status = 'recruiting'
+   └─ players = [driver.id]
+
+4. 加入 activeRooms Map
+   └─ activeRooms.set(roomId, roomData)
+
+5. 生成並發送公告（原始伺服器）
+   └─ embed = createRecruitingEmbed(roomData)
+   └─ buttons = createRoomButtons(roomId, 'recruiting')
+   └─ message = await interaction.reply({ embeds, components })
+
+6. 儲存訊息 ID
+   └─ roomData.messageId = message.id
+
+7. 推送到中央伺服器（如果啟用）
+   └─ if (ENABLE_CROSS_SERVER)
+   └─   await postToCentralServer(roomData, embed, buttons)
+
+8. 設定殭屍房計時器
+   └─ setZombieTimer(roomId)
+
+9. 返回 roomId
+```
+
+**輸出：**
+```javascript
+return roomId; // String
+```
+
+**錯誤處理：**
+```javascript
+try {
+  // 執行流程
+} catch (error) {
+  console.error('建立房間失敗:', error);
+  await interaction.reply({ 
+    content: '❌ 建立房間失敗，請稍後再試', 
+    ephemeral: true 
+  });
+  return null;
+}
+```
+
+---
+
+#### 4.2.2 joinRoom(roomId, userId)
+
+**功能：** 玩家加入房間排隊
+
+**輸入參數：**
+```javascript
+{
+  roomId: String,    // 房間 ID
+  userId: String     // 玩家 Discord User ID
+}
+```
+
+**前置檢查：**
+```javascript
+1. 房間是否存在
+   if (!activeRooms.has(roomId)) 
+     return { success: false, reason: '房間不存在' }
+
+2. 用戶是否已在隊伍
+   if (roomData.players.includes(userId))
+     return { success: false, reason: '已在隊伍中' }
+
+3. 房間是否已滿
+   if (roomData.players.length >= roomData.maxPlayers)
+     return { success: false, reason: '房間已滿' }
+
+4. 房間狀態是否允許加入
+   if (roomData.status === 'closed')
+     return { success: false, reason: '房間已關閉' }
+```
+
+**執行流程：**
+```
+1. 將 userId 加入 players 陣列
+   └─ roomData.players.push(userId)
+
+2. 清除殭屍房計時器（如果存在）
+   └─ if (roomData.zombieTimer) {
+   └─   clearTimeout(roomData.zombieTimer)
+   └─   roomData.zombieTimer = null
+   └─ }
+
+3. 檢查是否人滿
+   └─ isFull = (roomData.players.length >= roomData.maxPlayers)
+
+4. 如果人滿：
+   └─ 更新狀態
+      └─ roomData.status = 'full'
+      └─ roomData.fullAt = new Date().toISOString()
+   
+   └─ 啟動自動關閉計時器
+      └─ setAutoCloseTimer(roomId)
+   
+   └─ 儲存日誌
+      └─ saveLog(roomData)
+
+5. 更新公告（原始伺服器）
+   └─ embed = isFull ? createFullEmbed(roomData) : createRecruitingEmbed(roomData)
+   └─ buttons = createRoomButtons(roomId, roomData.status)
+   └─ await updateRoomMessage(roomData, embed, buttons)
+
+6. 更新中央伺服器公告（如果啟用）
+   └─ if (ENABLE_CROSS_SERVER && roomData.centralMessageId)
+   └─   await updateCentralMessage(roomData, embed, buttons)
+
+7. 返回成功
+```
+
+**輸出：**
+```javascript
+return {
+  success: true,
+  isFull: Boolean,
+  currentPlayers: Number
+}
+```
+
+---
+
+#### 4.2.3 setAutoCloseTimer(roomId)
+
+**功能：** 設定房間自動關閉計時器（人滿後觸發）
+
+**輸入參數：**
+```javascript
+{
+  roomId: String
+}
+```
+
+**執行流程：**
+```
+1. 取得房間資料
+   └─ roomData = activeRooms.get(roomId)
+   └─ if (!roomData) return
+
+2. 計算關閉時間
+   └─ closeTime = Date.now() + FULL_ROOM_DURATION
+   └─ roomData.closeAt = new Date(closeTime).toISOString()
+
+3. 設定警告計時器（關閉前 5 分鐘）
+   └─ warningDelay = FULL_ROOM_DURATION - WARNING_TIME
+   └─ roomData.warningTimer = setTimeout(async () => {
+   
+       // 更新狀態為即將結束
+       roomData.status = 'ending'
+       
+       // 重新生成公告（橘色）
+       embed = createEndingEmbed(roomData)
+       buttons = createRoomButtons(roomId, 'ending')
+       
+       // 更新兩邊訊息
+       await updateRoomMessage(roomData, embed, buttons)
+       await updateCentralMessage(roomData, embed, buttons)
+       
+   }, warningDelay)
+
+4. 設定關閉計時器（時間到自動關閉）
+   └─ roomData.closeTimer = setTimeout(() => {
+       closeRoom(roomId, '⏰ 時間到，房間已自動關閉')
+   }, FULL_ROOM_DURATION)
+
+5. 儲存計時器 ID 到 roomData
+```
+
+**延長時間處理：**
+```javascript
+function extendRoom(roomId) {
+  const roomData = activeRooms.get(roomId);
+  
+  // 檢查延長次數
+  if (roomData.extendCount >= MAX_EXTENDS) {
+    return { success: false, reason: '已達延長上限' };
+  }
+  
+  // 清除舊計時器
+  if (roomData.warningTimer) clearTimeout(roomData.warningTimer);
+  if (roomData.closeTimer) clearTimeout(roomData.closeTimer);
+  
+  // 增加延長次數
+  roomData.extendCount++;
+  
+  // 重新設定計時器
+  setAutoCloseTimer(roomId);
+  
+  return { 
+    success: true, 
+    remainingExtends: MAX_EXTENDS - roomData.extendCount 
+  };
+}
+```
+
+---
+
+#### 4.2.4 closeRoom(roomId, reason)
+
+**功能：** 關閉房間並清理資源
+
+**輸入參數：**
+```javascript
+{
+  roomId: String,      // 房間 ID
+  reason: String       // 關閉原因（顯示給用戶）
+}
+```
+
+**執行流程：**
+```
+1. 取得房間資料
+   └─ roomData = activeRooms.get(roomId)
+   └─ if (!roomData) return
+
+2. 清除所有計時器
+   └─ if (roomData.zombieTimer) clearTimeout(roomData.zombieTimer)
+   └─ if (roomData.closeTimer) clearTimeout(roomData.closeTimer)
+   └─ if (roomData.warningTimer) clearTimeout(roomData.warningTimer)
+
+3. 更新原始伺服器公告為「已結束」
+   └─ embed = createClosedEmbed(roomData, reason)
+   └─ try {
+   └─   channel = await client.channels.fetch(roomData.channelId)
+   └─   message = await channel.messages.fetch(roomData.messageId)
+   └─   await message.edit({ embeds: [embed], components: [] })
+   └─ } catch (error) {
+   └─   console.error('更新訊息失敗:', error)
+   └─ }
+
+4. 刪除中央伺服器公告（立即刪除，保持招募區整潔）
+   └─ if (roomData.centralMessageId) {
+   └─   await deleteCentralMessage(roomData)
+   └─ }
+
+5. 設定原始訊息刪除計時器（10 分鐘後）
+   └─ setTimeout(async () => {
+   └─   try {
+   └─     await message.delete()
+   └─   } catch (error) {
+   └─     console.log('訊息已被刪除或無權限')
+   └─   }
+   └─ }, DELETE_DELAY)
+
+6. 從 activeRooms 移除
+   └─ activeRooms.delete(roomId)
+
+7. 記錄日誌（如果尚未記錄）
+   └─ if (roomData.status === 'full' && !alreadyLogged) {
+   └─   saveLog(roomData)
+   └─ }
+```
+
+**關閉觸發場景：**
+```
+1. 時間到自動關閉
+   └─ reason = '⏰ 時間到，房間已自動關閉'
+
+2. 司機手動關閉
+   └─ reason = '🏁 司機已手動結束發車'
+
+3. 司機退出房間
+   └─ reason = '🛑 司機已取消發車，房間關閉'
+
+4. 殭屍房自動清理
+   └─ reason = '超過 2 小時無人加入，房間已自動關閉'
+```
+
+---
+
+#### 4.2.5 saveLog(roomData)
+
+**功能：** 儲存發車記錄到 logs.json
+
+**輸入參數：**
+```javascript
+{
+  roomData: Object  // 房間資料物件
+}
+```
+
+**執行流程：**
+```
+1. 計算統計數據
+   └─ createdTime = new Date(roomData.createdAt)
+   └─ completedTime = new Date(roomData.fullAt || new Date())
+   └─ duration = (completedTime - createdTime) / 1000  // 秒
+   └─ joinSpeed = duration  // 招滿速度
+
+2. 建立日誌條目
+   └─ logEntry = {
+         game: roomData.game,
+         guildId: roomData.guildId,
+         guildName: roomData.guildName,
+         driver: roomData.driver,
+         players: roomData.players,
+         createdAt: roomData.createdAt,
+         completedAt: completedTime.toISOString(),
+         duration: duration,
+         joinSpeed: joinSpeed,
+         finalPlayerCount: roomData.players.length
+       }
+
+3. 讀取現有日誌
+   └─ let logs = []
+   └─ if (fs.existsSync('logs.json')) {
+   └─   data = fs.readFileSync('logs.json', 'utf8')
+   └─   logs = JSON.parse(data)
+   └─ }
+
+4. 新增記錄
+   └─ logs.push(logEntry)
+
+5. 寫入檔案
+   └─ fs.writeFileSync('logs.json', JSON.stringify(logs, null, 2))
+
+6. 記錄成功
+   └─ console.log('✅ 發車記錄已儲存')
+```
+
+**錯誤處理：**
+```javascript
+try {
+  // 執行儲存
+} catch (error) {
+  console.error('❌ 記錄儲存失敗:', error);
+  // 不阻斷主流程，記錄失敗不影響功能
+}
+```
+
+---
+
+## 5. 跨伺服器招募架構
+
+### 5.1 架構選擇：中央招募頻道模式
+
+**為什麼選這個？**
+- ✅ 實作簡單（MVP 階段最適合）
+- ✅ 容易管理（所有房間集中顯示）
+- ✅ 降低垃圾訊息（不在客戶伺服器重複推播）
+- ✅ 易於擴展（未來可加遊戲分流）
+- ✅ 無需資料庫（符合當前限制）
+
+### 5.2 中央伺服器結構設計
+
+```
+PersonaLink 官方伺服器
+│
+├─ 📢 #公告與規則
+│  └─ Bot 使用說明、規則、更新日誌
+│
+├─ 💬 #一般聊天
+│  └─ 玩家交流區
+│
+├─ 🆘 #客服支援
+│  └─ 問題回報、功能建議
+│
+└─ 🌍 招募區
+   └─ #全球招募
+      └─ 所有伺服器的發車公告統一顯示在這裡
+      └─ 按發車時間排序（最新在下方）
+```
+
+**頻道設定建議：**
+```
+#全球招募 頻道設定：
+├─ 權限：所有人可查看，只有 Bot 可發言
+├─ 慢速模式：關閉（Bot 發言不受限）
+├─ 釘選訊息：使用說明
+└─ 主題：即時遊戲招募 | 點擊按鈕加入隊伍
+```
+
+### 5.3 跨伺服器流程詳細設計
+
+#### 完整流程圖
+
+```
+[步驟 1] 玩家 A 在伺服器 X 執行 /開車
+    ↓
+[步驟 2] Bot 在伺服器 X 頻道發送公告（message1）
+    ├─ 儲存 messageId 到 roomData
+    └─ 顯示遊戲、人數、司機資訊
+    ↓
+[步驟 3] Bot 同步發送到中央伺服器 #全球招募（message2）
+    ├─ 儲存 centralMessageId 到 roomData
+    ├─ 公告內容相同，但加註「來自: 伺服器 X」
+    └─ 提供伺服器邀請連結按鈕
+    ↓
+[步驟 4] 玩家 B 在中央伺服器看到 message2
+    ↓
+[步驟 5] 玩家 B 點擊「🎮 我要排隊」按鈕
+    ↓
+[步驟 6] Bot 檢查玩家 B 是否已在伺服器 X
+    ├─ 是 → 直接執行 joinRoom()
+    │   └─ 更新兩邊公告
+    │
+    └─ 否 → 發送提示訊息
+        ↓
+    ┌──────────────────────────────────┐
+    │ ⚠️ 你需要先加入該伺服器！          │
+    │                                  │
+    │ 🔗 伺服器名稱：電競天堂            │
+    │ [點此加入伺服器]（按鈕）           │
+    │                                  │
+    │ 加入後請回到招募頻道重新點擊排隊   │
+    └──────────────────────────────────┘
+    ↓
+[步驟 7] 玩家 B 加入伺服器 X
+    ↓
+[步驟 8] 玩家 B 回到中央伺服器重新點擊「🎮 我要排隊」
+    ↓
+[步驟 9] Bot 檢查通過，執行 joinRoom()
+    ├─ 更新原始伺服器公告（message1）
+    └─ 更新中央伺服器公告（message2）
+```
+
+#### 關鍵實作細節
+
+**檢查用戶是否在伺服器：**
+```javascript
+async function isUserInGuild(userId, guildId) {
+  try {
+    const guild = await client.guilds.fetch(guildId);
+    const member = await guild.members.fetch(userId);
+    return member !== null;
+  } catch (error) {
+    // 用戶不在伺服器或無法取得資訊
+    return false;
+  }
+}
+```
+
+**發送邀請提示（DM 或 ephemeral 訊息）：**
+```javascript
+async function sendInvitePrompt(interaction, guildId, guildName) {
+  // 取得伺服器邀請連結
+  const inviteUrl = await getGuildInviteUrl(guildId);
+  
+  if (!inviteUrl) {
+    return interaction.reply({
+      content: '❌ 該伺服器尚未設定邀請連結，請聯繫伺服器管理員',
+      ephemeral: true
+    });
+  }
+  
+  const embed = new EmbedBuilder()
+    .setColor('#ffaa00')
+    .setTitle('⚠️ 需要加入伺服器')
+    .setDescription(`你需要先加入 **${guildName}** 才能排隊`)
+    .addFields({
+      name: '📝 步驟',
+      value: '1. 點擊下方按鈕加入伺服器\n2. 回到招募頻道\n3. 重新點擊「我要排隊」'
+    });
+  
+  const button = new ButtonBuilder()
+    .setLabel(`加入 ${guildName}`)
+    .setStyle(ButtonStyle.Link)
+    .setURL(inviteUrl)
+    .setEmoji('🔗');
+  
+  const row = new ActionRowBuilder().addComponents(button);
+  
+  await interaction.reply({
+    embeds: [embed],
+    components: [row],
+    ephemeral: true
+  });
+}
+```
+
+### 5.4 訊息同步策略
+
+**需要同步的事件：**
+
+| 事件 | 原始伺服器 | 中央伺服器 | 備註 |
+|------|-----------|-----------|------|
+| 房間建立 | 發送新公告 | 發送新公告 | 兩邊同時發 |
+| 玩家加入 | 更新人數 + 名單 | 更新人數 + 名單 | 同步更新 |
+| 玩家退出 | 更新人數 + 名單 | 更新人數 + 名單 | 同步更新 |
+| 人滿發車 | 變紅色 + @ 玩家 + 按鈕變灰 | 變紅色 + 按鈕變灰 | @ 功能僅原始伺服器 |
+| 即將結束 | 變橘色 + 倒數計時 | 變橘色 + 倒數計時 | 同步更新 |
+| 延長時間 | 更新倒數計時 | 更新倒數計時 | 同步更新 |
+| 房間關閉 | 變灰色 → 10 分鐘後刪除 | **立即刪除** | 保持招募區整潔 |
+
+**訊息同步實作：**
+
+```javascript
+async function updateCentralMessage(roomData, embed, buttons) {
+  if (!ENABLE_CROSS_SERVER || !roomData.centralMessageId) {
+    return; // 未啟用或無中央訊息
+  }
+  
+  try {
+    const channel = await client.channels.fetch(process.env.RECRUIT_CHANNEL_ID);
+    const message = await channel.messages.fetch(roomData.centralMessageId);
+    
+    await message.edit({
+      embeds: [embed],
+      components: [buttons]
+    });
+  } catch (error) {
+    console.error('更新中央伺服器訊息失敗:', error);
+    // 不阻斷主流程
+  }
+}
+
+async function deleteCentralMessage(roomData) {
+  if (!roomData.centralMessageId) return;
+  
+  try {
+    const channel = await client.channels.fetch(process.env.RECRUIT_CHANNEL_ID);
+    const message = await channel.messages.fetch(roomData.centralMessageId);
+    await message.delete();
+  } catch (error) {
+    console.log('中央訊息已被刪除或無法存取');
+  }
+}
+```
+
+### 5.5 邀請連結管理系統
+
+**問題：** Bot 如何取得每個客戶伺服器的邀請連結？
+
+**解決方案：管理員手動設定（MVP 階段推薦）**
+
+#### 設定指令設計
+
+```javascript
+// /設定 invite_url https://discord.gg/xxxxx
+{
+  name: '設定',
+  description: '設定伺服器相關功能',
+  options: [
+    {
+      name: 'invite_url',
+      description: '設定伺服器邀請連結（用於跨伺服器招募）',
+      type: ApplicationCommandOptionType.String,
+      required: true
+    }
+  ]
+}
+```
+
+#### 實作邏輯
+
+```javascript
+// 指令處理
+if (interaction.commandName === '設定') {
+  const inviteUrl = interaction.options.getString('invite_url');
+  const guildId = interaction.guildId;
+  
+  // 驗證 URL 格式
+  if (!inviteUrl.match(/^https:\/\/discord\.gg\/[a-zA-Z0-9]+$/)) {
+    return interaction.reply({
+      content: '❌ 邀請連結格式錯誤，請使用類似 https://discord.gg/xxxxx 的格式',
+      ephemeral: true
+    });
+  }
+  
+  // 儲存設定
+  await saveGuildInviteUrl(guildId, inviteUrl);
+  
+  await interaction.reply({
+    content: '✅ 邀請連結已設定成功！現在跨伺服器玩家可以通過此連結加入你的伺服器',
+    ephemeral: true
+  });
+}
+
+// 儲存到 guildSettings.json
+async function saveGuildInviteUrl(guildId, inviteUrl) {
+  let settings = {};
+  
+  if (fs.existsSync('guildSettings.json')) {
+    const data = fs.readFileSync('guildSettings.json', 'utf8');
+    settings = JSON.parse(data);
+  }
+  
+  settings[guildId] = {
+    guildId: guildId,
+    inviteUrl: inviteUrl,
+    enabled: true,
+    createdAt: new Date().toISOString()
+  };
+  
+  fs.writeFileSync('guildSettings.json', JSON.stringify(settings, null, 2));
+}
+
+// 讀取邀請連結
+async function getGuildInviteUrl(guildId) {
+  try {
+    if (!fs.existsSync('guildSettings.json')) {
+      return null;
+    }
+    
+    const data = fs.readFileSync('guildSettings.json', 'utf8');
+    const settings = JSON.parse(data);
+    
+    return settings[guildId]?.inviteUrl || null;
+  } catch (error) {
+    console.error('讀取伺服器設定失敗:', error);
+    return null;
+  }
+}
+```
+
+#### 初次設定提示
+
+```javascript
+// Bot 加入新伺服器時自動發送提示
+client.on('guildCreate', async (guild) => {
+  // 尋找第一個文字頻道
+  const channel = guild.channels.cache
+    .filter(c => c.type === ChannelType.GuildText)
+    .first();
+  
+  if (!channel) return;
+  
+  const embed = new EmbedBuilder()
+    .setColor('#00ff00')
+    .setTitle('✅ PersonaLink Bot 已加入伺服器！')
+    .setDescription('感謝使用 PersonaLink！')
+    .addFields(
+      {
+        name: '🚀 開始使用',
+        value: '使用 `/開車` 指令建立遊戲房間'
+      },
+      {
+        name: '🌍 啟用跨伺服器招募',
+        value: '使用 `/設定 invite_url` 設定伺服器邀請連結\n範例：`/設定 invite_url https://discord.gg/example`'
+      },
+      {
+        name: '📖 更多資訊',
+        value: '加入官方伺服器查看完整教學'
+      }
+    );
+  
+  await channel.send({ embeds: [embed] });
+});
+```
+
+---
+
+## 6. 房間生命週期管理
+
+### 6.1 狀態機設計
+
+```
+                    創建房間 (/開車)
+                       ↓
+              ┌────────────────┐
+              │   RECRUITING   │ ◄─── 有人退出（非司機）
+              │   (招募中)      │      且人數 < maxPlayers
+              └───┬────────┬───┘
+                  │        │
+         有人加入 │        │ 觸發關閉條件：
+         且人滿   │        │ • 司機取消
+                  │        │ • 2小時無人加入
+                  ↓        ↓
+              ┌────────┐  [跳到 CLOSED]
+              │  FULL  │
+              │ (已滿) │
+              └───┬────┘
+                  │
+                  │ 倒數 45 分鐘
+                  │ （可延長 2 次）
+                  ↓
+              ┌─────────┐
+              │ ENDING  │ ◄─── 最後 5 分鐘
+              │(即將結束)│
+              └───┬─────┘
+                  │
+         時間到 / │ / 司機手動關閉
+                  ↓
+              ┌─────────┐
+              │ CLOSED  │ ──→ 10 分鐘後刪除訊息
+              │(已結束) │      從 Map 移除
+              └─────────┘
+```
+
+### 6.2 各狀態詳細說明
+
+#### RECRUITING（招募中）
+
+**特徵：**
+- 顏色：🟢 綠色
+- 標題：`🚗 {遊戲名稱} - 發車中！`
+- 描述：`司機 @{name} 正在 **{伺服器名稱}** 揪團！`
+
+**可用按鈕：**
+```
+┌──────────────┬──────────────┐
+│ 🎮 我要排隊  │  ❌ 取消排隊  │
+│  (啟用)      │   (啟用)      │
+└──────────────┴──────────────┘
+```
+
+**計時器：**
+- ✅ 殭屍房計時器（2 小時）
+- ❌ 自動關閉計時器（未啟動）
+
+**允許操作：**
+- ✅ 玩家加入
+- ✅ 玩家退出（非司機）
+- ✅ 司機取消發車
+
+**狀態轉換條件：**
+- → FULL：人數達到 maxPlayers
+- → CLOSED：司機取消 或 2 小時無人加入
+
+---
+
+#### FULL（已滿）
+
+**特徵：**
+- 顏色：🔴 紅色
+- 標題：`🚗 {遊戲名稱} - 已滿！`
+- 描述：`✅ 人滿發車！所有隊員請準備！\n@user1 @user2 @user3...`
+
+**可用按鈕：**
+```
+┌──────────────┬──────────────┬──────────────┬──────────────┐
+│ 🎮 我要排隊  │  ❌ 取消排隊  │  ⏰ 延長30分  │  🏁 結束發車  │
+│  (禁用)      │   (啟用)      │ (司機專用)   │  (司機專用)   │
+└──────────────┴──────────────┴──────────────┴──────────────┘
+```
+
+**顯示資訊：**
+- 剩餘時間：`⏰ 剩餘時間：約 40 分鐘後自動關閉`
+- 隊員名單：完整列出所有玩家
+
+**計時器：**
+- ❌ 殭屍房計時器（已清除）
+- ✅ 警告計時器（40 分鐘後觸發）
+- ✅ 關閉計時器（45 分鐘後觸發）
+
+**允許操作：**
+- ❌ 玩家加入（按鈕禁用）
+- ✅ 玩家退出（會回到 RECRUITING）
+- ✅ 司機延長時間（最多 2 次）
+- ✅ 司機手動關閉
+
+**狀態轉換條件：**
+- → RECRUITING：有人退出且人數 < maxPlayers
+- → ENDING：40 分鐘倒數結束
+- → CLOSED：司機關閉 或 時間到
+
+---
+
+#### ENDING（即將結束）
+
+**特徵：**
+- 顏色：🟠 橘色
+- 標題：`⏰ {遊戲名稱} - 即將結束！`
+- 描述：`⚠️ 房間將在 5 分鐘後自動關閉`
+
+**可用按鈕：**
+```
+┌──────────────┬──────────────┬──────────────┬──────────────┐
+│ 🎮 我要排隊  │  ❌ 取消排隊  │  ⏰ 延長30分  │  🏁 結束發車  │
+│  (禁用)      │   (啟用)      │ (司機專用)   │  (司機專用)   │
+└──────────────┴──────────────┴──────────────┴──────────────┘
+```
+
+**計時器：**
+- ✅ 關閉計時器（5 分鐘後觸發）
+
+**允許操作：**
+- ❌ 玩家加入
+- ✅ 玩家退出（會回到 RECRUITING）
+- ✅ 司機延長時間（如果次數未用完）
+- ✅ 司機手動關閉
+
+**狀態轉換條件：**
+- → RECRUITING：有人退出
+- → FULL：司機延長時間（重新計時）
+- → CLOSED：時間到 或 司機關閉
+
+---
+
+#### CLOSED（已結束）
+
+**特徵：**
+- 顏色：⚫ 灰色
+- 標題：`⚫ {遊戲名稱} - 已結束`
+- 描述：關閉原因（例如：`⏰ 時間到，房間已自動關閉`）
+
+**可用按鈕：**
+```
+無按鈕（components: []）
+```
+
+**計時器：**
+- ✅ 刪除計時器（10 分鐘後刪除訊息）
+
+**允許操作：**
+- ❌ 所有互動都被禁用
+
+**後續處理：**
+1. 中央伺服器訊息：立即刪除
+2. 原始伺服器訊息：10 分鐘後刪除
+3. activeRooms：立即移除
+4. logs.json：已記錄（如果人滿過）
+
+---
+
+### 6.3 計時器邏輯詳解
+
+#### 殭屍房計時器（Zombie Timer）
+
+**觸發時機：** 房間建立時立即設定
+
+**檢查邏輯：**
+```javascript
+function setZombieTimer(roomId) {
+  const roomData = activeRooms.get(roomId);
+  
+  roomData.zombieTimer = setTimeout(() => {
+    // 檢查是否仍只有司機一人
+    if (roomData.players.length === 1) {
+      closeRoom(roomId, '超過 2 小時無人加入，房間已自動關閉');
+    }
+  }, ZOMBIE_ROOM_TIMEOUT); // 2 小時
+}
+```
+
+**取消條件：** 第一個玩家加入時
+```javascript
+// 在 joinRoom() 中
+if (roomData.players.length === 2 && roomData.zombieTimer) {
+  clearTimeout(roomData.zombieTimer);
+  roomData.zombieTimer = null;
+}
+```
+
+---
+
+#### 自動關閉計時器（Auto-Close Timer）
+
+**觸發時機：** 房間人滿時（status 變為 FULL）
+
+**包含兩個子計時器：**
+
+1. **警告計時器（Warning Timer）**
+   ```javascript
+   warningDelay = FULL_ROOM_DURATION - WARNING_TIME; // 40 分鐘
+   
+   roomData.warningTimer = setTimeout(async () => {
+     roomData.status = 'ending';
+     
+     const embed = createEndingEmbed(roomData);
+     const buttons = createRoomButtons(roomId, 'ending');
+     
+     await updateRoomMessage(roomData, embed, buttons);
+     await updateCentralMessage(roomData, embed, buttons);
+   }, warningDelay);
+   ```
+
+2. **關閉計時器（Close Timer）**
+   ```javascript
+   roomData.closeTimer = setTimeout(() => {
+     closeRoom(roomId, '⏰ 時間到，房間已自動關閉');
+   }, FULL_ROOM_DURATION); // 45 分鐘
+   ```
+
+**延長機制：**
+```javascript
+function extendRoom(roomId) {
+  const roomData = activeRooms.get(roomId);
+  
+  // 檢查次數
+  if (roomData.extendCount >= MAX_EXTENDS) {
+    return { success: false };
+  }
+  
+  // 清除舊計時器
+  clearTimeout(roomData.warningTimer);
+  clearTimeout(roomData.closeTimer);
+  
+  // 增加計數
+  roomData.extendCount++;
+  
+  // 重新計算關閉時間
+  const newCloseTime = Date.now() + FULL_ROOM_DURATION;
+  roomData.closeAt = new Date(newCloseTime).toISOString();
+  
+  // 重設計時器
+  setAutoCloseTimer(roomId);
+  
+  return { 
+    success: true,
+    remainingExtends: MAX_EXTENDS - roomData.extendCount
+  };
+}
+```
+
+---
+
+#### 刪除計時器（Delete Timer）
+
+**觸發時機：** 房間進入 CLOSED 狀態
+
+**行為差異：**
+- 原始伺服器：10 分鐘後刪除
+- 中央伺服器：立即刪除
+
+```javascript
+// 在 closeRoom() 中
+
+// 中央伺服器：立即刪除
+if (roomData.centralMessageId) {
+  await deleteCentralMessage(roomData);
+}
+
+// 原始伺服器：10 分鐘後刪除
+setTimeout(async () => {
+  try {
+    const channel = await client.channels.fetch(roomData.channelId);
+    const message = await channel.messages.fetch(roomData.messageId);
+    await message.delete();
+  } catch (error) {
+    console.log('訊息已被刪除');
+  }
+}, DELETE_DELAY);
+```
+
+---
+
+### 6.4 邊界情況處理表
+
+| 情況 | 當前狀態 | 處理方式 | 結果狀態 |
+|------|---------|---------|---------|
+| 已滿房間有人退出 | FULL/ENDING | 移除玩家 → 清除計時器 → 狀態改為 RECRUITING | RECRUITING |
+| 司機退出未滿房間 | RECRUITING | 立即執行 closeRoom() | CLOSED |
+| 司機退出已滿房間 | FULL/ENDING | 立即執行 closeRoom() | CLOSED |
+| 重複點擊加入 | ANY | 返回錯誤訊息「已在隊伍中」 | 不變 |
+| 滿房時點擊加入 | FULL/ENDING | 返回錯誤訊息「房間已滿」 | 不變 |
+| 不在隊伍時點退出 | ANY | 返回錯誤訊息「不在隊伍中」 | 不變 |
+| 非司機點延長 | FULL/ENDING | 返回錯誤訊息「只有司機可延長」 | 不變 |
+| 延長次數用完 | FULL/ENDING | 返回錯誤訊息「已達延長上限」 | 不變 |
+| Bot 重啟時有活躍房間 | ANY | 計時器遺失，房間變殭屍 | 保持原狀態 |
+| 原始訊息被手動刪除 | ANY | activeRooms 仍存在，無法更新 | 需定期清理 |
+| 中央訊息被手動刪除 | ANY | centralMessageId 失效，更新失敗 | 記錄錯誤，繼續 |
+| Discord API 失敗 | ANY | 重試 3 次，失敗則記錄錯誤 | 不崩潰 |
+
+**定期清理孤兒房間（建議）：**
+```javascript
+// 每 30 分鐘執行一次
+setInterval(() => {
+  const now = Date.now();
+  
+  activeRooms.forEach(async (roomData, roomId) => {
+    try {
+      // 嘗試獲取訊息
+      const channel = await client.channels.fetch(roomData.channelId);
+      const message = await channel.messages.fetch(roomData.messageId);
+    } catch (error) {
+      // 訊息不存在，清理房間
+      console.log(`清理孤兒房間: ${roomId}`);
+      activeRooms.delete(roomId);
+    }
+  });
+}, 30 * 60 * 1000);
+```
+
+---
+
+## 7. 事件流程圖
+
+### 7.1 完整發車流程（文字描述）
+
+```
+[T+0s] 玩家 A（司機）在伺服器 X 執行 /開車 傳說對決 5人
+
+[T+1s] Bot 處理指令
+  ├─ 建立 roomData 物件
+  ├─ roomId = "channelId-timestamp"
+  ├─ status = 'recruiting'
+  ├─ players = [玩家A的ID]
+  └─ 加入 activeRooms Map
+
+[T+2s] Bot 發送公告到伺服器 X
+  ├─ 綠色 Embed
+  ├─ 標題：🚗 傳說對決 - 發車中！
+  ├─ 人數：1/5
+  ├─ 按鈕：[我要排隊] [取消排隊]
+  └─ 儲存 messageId
+
+[T+3s] Bot 推送到中央伺服器 #全球招募
+  ├─ 相同 Embed（加註來源：伺服器 X）
+  ├─ 相同按鈕
+  └─ 儲存 centralMessageId
+
+[T+4s] 啟動殭屍房計時器
+  └─ 2 小時後檢查是否仍只有 1 人
+
+---
+
+[T+5m] 玩家 B 在中央伺服器看到公告，點擊「我要排隊」
+
+[T+5m 1s] Bot 檢查玩家 B 是否在伺服器 X
+  └─ 不在 → 發送邀請提示（ephemeral）
+
+[T+5m 30s] 玩家 B 點擊邀請連結，加入伺服器 X
+
+[T+6m] 玩家 B 重新點擊「我要排隊」
+
+[T+6m 1s] Bot 執行 joinRoom()
+  ├─ 將玩家 B 加入 players 陣列
+  ├─ 清除殭屍房計時器
+  ├─ 檢查人數：2/5（未滿）
+  └─ 更新兩邊公告
+
+---
+
+[T+10m] 玩家 C、D、E 陸續加入
+
+[T+15m] 玩家 E 點擊「我要排隊」（第 5 人）
+
+[T+15m 1s] Bot 檢測人滿
+  ├─ status = 'full'
+  ├─ fullAt = 當前時間
+  ├─ 計算 closeAt = 當前時間 + 45 分鐘
+  └─ 啟動自動關閉計時器
+
+[T+15m 2s] 更新公告為紅色
+  ├─ 標題：🚗 傳說對決 - 已滿！
+  ├─ 描述：@ 所有 5 位玩家
+  ├─ 按鈕：[我要排隊(禁用)] [取消排隊] [延長30分] [結束發車]
+  └─ 顯示：⏰ 剩餘時間：約 45 分鐘
+
+[T+15m 3s] 儲存日誌到 logs.json
+
+---
+
+[T+55m] 警告計時器觸發（人滿後 40 分鐘）
+
+[T+55m 1s] 更新公告為橘色
+  ├─ status = 'ending'
+  ├─ 標題：⏰ 傳說對決 - 即將結束！
+  ├─ 描述：房間將在 5 分鐘後自動關閉
+  └─ 剩餘時間更新
+
+---
+
+[可選分支] 司機點擊「延長 30 分」
+
+  ├─ 檢查 extendCount < 2 → 通過
+  ├─ 清除舊計時器
+  ├─ extendCount++
+  ├─ closeAt = 當前時間 + 45 分鐘
+  ├─ 重新設定計時器
+  └─ 回應：✅ 已延長（剩餘次數: 1）
+
+---
+
+[T+60m] 關閉計時器觸發（人滿後 45 分鐘）
+
+[T+60m 1s] Bot 執行 closeRoom()
+  ├─ 清除所有計時器
+  ├─ 更新原始伺服器公告為灰色
+  │  ├─ 標題：⚫ 傳說對決 - 已結束
+  │  ├─ 描述：⏰ 時間到，房間已自動關閉
+  │  └─ 移除所有按鈕
+  └─ 刪除中央伺服器公告（立即）
+
+[T+60m 2s] 設定刪除計時器（10 分鐘）
+
+[T+70m] 刪除原始伺服器公告
+
+[T+70m 1s] 從 activeRooms 移除該房間
+```
+
+---
+
+### 7.2 司機取消發車流程
+
+```
+[場景] 房間處於 RECRUITING 狀態，當前人數 3/5
+
+[T+0s] 司機點擊「❌ 取消排隊」
+
+[T+1s] Bot 檢測
+  └─ userId === roomData.driver → 確認是司機
+
+[T+2s] 執行 closeRoom(roomId, '🛑 司機已取消發車，房間關閉')
+  ├─ 清除殭屍房計時器
+  ├─ 更新原始公告為灰色
+  ├─ 刪除中央公告
+  └─ 設定 10 分鐘後刪除計時器
+
+[T+12m] 刪除原始公告並從 Map 移除
+```
+
+---
+
+### 7.3 玩家退出導致未滿流程
+
+```
+[場景] 房間處於 FULL 狀態，當前人數 5/5
+
+[T+0s] 玩家 C（非司機）點擊「❌ 取消排隊」
+
+[T+1s] Bot 執行 leaveRoom()
+  ├─ 從 players 陣列移除玩家 C
+  ├─ 當前人數：4/5（< maxPlayers）
+  └─ status = 'recruiting'
+
+[T+2s] 清除自動關閉相關計時器
+  ├─ clearTimeout(warningTimer)
+  └─ clearTimeout(closeTimer)
+
+[T+3s] 更新公告為綠色
+  ├─ 標題：🚗 傳說對決 - 發車中！
+  ├─ 人數：4/5
+  ├─ 按鈕：[我要排隊] [取消排隊]
+  └─ 移除延長、結束按鈕
+
+[T+4s] 同步更新中央伺服器公告
+```
+
+---
+
+## 8. 擴展性設計
+
+### 8.1 未來升級路徑（資料庫就緒後）
+
+**階段 2 功能（需要資料庫）：**
+
+```
+功能升級計畫：
+├─ 資料持久化
+│  ├─ 從 JSON 遷移到 PostgreSQL
+│  ├─ activeRooms → rooms 表（支援 Bot 重啟恢復）
+│  ├─ logs → logs 表（支援複雜查詢）
+│  └─ guildSettings → guilds 表
+│
+├─ 戰隊系統
+│  ├─ teams 表（戰隊資訊）
+│  ├─ team_members 表（成員關係）
+│  └─ /戰隊 指令集
+│
+├─ 玩家評價系統
+│  ├─ ratings 表（評分記錄）
+│  ├─ user_stats 表（玩家統計）
+│  └─ 房間結束後評分功能
+│
+├─ 進階統計
+│  ├─ /統計 個人（我的發車記錄）
+│  ├─ /統計 伺服器（伺服器數據）
+│  └─ /統計 遊戲（遊戲熱度排行）
+│
+└─ 排程發車
+   ├─ scheduled_rooms 表
+   ├─ /預約發車 指令
+   └─ 定時自動發車功能
+```
+
+### 8.2 RoomData 預留欄位（註解掉，暫不使用）
+
+```javascript
+{
+  // ... 現有欄位 ...
+  
+  // ===== 階段 2 預留欄位（暫不實作）=====
+  // voiceChannelId: String,       // 自動建立的語音頻道 ID
+  // tags: Array<String>,          // ['Rank鑽石+', '限有麥', '18+']
+  // requirementLevel: Number,     // 帳號等級要求
+  // private: Boolean,             // 是否私密房間
+  // password: String,             // 房間密碼
+  // teamId: String,               // 所屬戰隊 ID
+  // eventId: String,              // 關聯活動 ID
+  // recordingEnabled: Boolean,    // 是否錄製語音
+}
+```
+
+### 8.3 設定檔功能開關
+
+```javascript
+// 可在程式碼中設定
+const FEATURES = {
+  // 階段 1 功能（當前啟用）
+  crossServer: true,          // 跨伺服器招募
+  autoClose: true,            // 自動關閉房間
+  guildSettings: true,        // 伺服器設定
+  
+  // 階段 2 功能（暫時關閉）
+  voiceChannelCreate: false,  // 自動建立語音頻道
+  playerRating: false,        // 玩家評價系統
+  teamManagement: false,      // 戰隊管理
+  scheduledRooms: false,      // 排程發車
+  
+  // 階段 3 功能（未來規劃）
+  aiAnalysis: false,          // AI 分析
+  hrTechIntegration: false    // HR Tech 整合
+};
+```
+
+### 8.4 資料庫遷移準備（文檔用）
+
+**當資料庫可用時的遷移步驟：**
+
+```
+步驟 1：建立資料庫 Schema
+├─ CREATE TABLE rooms (...)
+├─ CREATE TABLE logs (...)
+├─ CREATE TABLE guilds (...)
+└─ CREATE TABLE users (...)
+
+步驟 2：資料遷移
+├─ 讀取 logs.json
+├─ INSERT INTO logs ...
+├─ 讀取 guildSettings.json
+└─ INSERT INTO guilds ...
+
+步驟 3：雙寫模式（測試期）
+├─ 新房間同時寫入 Map 和資料庫
+├─ 讀取優先從 Map
+└─ 驗證資料一致性
+
+步驟 4：完全切換
+├─ 移除 JSON 檔案讀寫
+├─ activeRooms 改為資料庫查詢
+└─ 計時器改用任務隊列（Bull + Redis）
+
+步驟 5：清理舊代碼
+├─ 移除 FileManagerModule
+└─ 更新所有讀寫邏輯
+```
+
+**Schema 設計範例（參考用）：**
+
+```sql
+-- rooms 表（活躍房間）
+CREATE TABLE rooms (
+  id VARCHAR(100) PRIMARY KEY,
+  game VARCHAR(50) NOT NULL,
+  max_players INT NOT NULL,
+  note TEXT,
+  driver_id VARCHAR(20) NOT NULL,
+  players JSONB NOT NULL,
+  channel_id VARCHAR(20) NOT NULL,
+  message_id VARCHAR(20),
+  guild_id VARCHAR(20) NOT NULL,
+  guild_name VARCHAR(100),
+  central_message_id VARCHAR(20),
+  status VARCHAR(20) NOT NULL,
+  created_at TIMESTAMP NOT NULL,
+  full_at TIMESTAMP,
+  close_at TIMESTAMP,
+  extend_count INT DEFAULT 0
+);
+
+-- logs 表（歷史記錄）
+CREATE TABLE logs (
+  id SERIAL PRIMARY KEY,
+  game VARCHAR(50) NOT NULL,
+  guild_id VARCHAR(20) NOT NULL,
+  guild_name VARCHAR(100),
+  driver_id VARCHAR(20) NOT NULL,
+  players JSONB NOT NULL,
+  created_at TIMESTAMP NOT NULL,
+  completed_at TIMESTAMP NOT NULL,
+  duration INT,
+  join_speed INT,
+  final_player_count INT
+);
+
+-- guilds 表（伺服器設定）
+CREATE TABLE guilds (
+  guild_id VARCHAR(20) PRIMARY KEY,
+  invite_url VARCHAR(200),
+  recruit_channel VARCHAR(20),
+  enabled BOOLEAN DEFAULT true,
+  created_at TIMESTAMP NOT NULL
+);
+```
+
+---
+
+## 9. 技術決策與權衡
+
+### 9.1 為什麼暫不使用資料庫？
+
+| 決策點 | JSON 檔案（當前）| PostgreSQL（未來）|
+|--------|-----------------|-------------------|
+| **開發速度** | ✅ 立即可用，零配置 | ❌ 需設定 Schema、連線 |
+| **部署複雜度** | ✅ Replit 原生支援 | ❌ 需額外資料庫服務 |
+| **成本** | ✅ $0 | ❌ $5-15/月 |
+| **資料安全性** | ⚠️ 重啟可能遺失 activeRooms | ✅ ACID 保證 |
+| **查詢能力** | ❌ 需載入全部後篩選 | ✅ SQL 複雜查詢 |
+| **擴展性** | ❌ 適合 <1000 筆/週 | ✅ 百萬筆資料 |
+| **計時器恢復** | ❌ 重啟後無法恢復 | ✅ 可從資料庫重建 |
+
+**結論：**
+- MVP 階段預期每週 <500 筆記錄，JSON 足夠
+- 重啟導致活躍房間遺失屬「可接受風險」（低頻事件）
+- 等有付費客戶後再升級資料庫（Month 2）
+- 避免過早優化
+
+---
+
+### 9.2 為什麼用 In-Memory Map 而非 Redis？
+
+| 決策點 | Map（當前）| Redis（未來）|
+|--------|-----------|--------------|
+| **即時性** | ✅ 最快（記憶體直接存取）| ✅ 快（網路延遲 <1ms）|
+| **持久化** | ❌ 重啟遺失 | ✅ RDB/AOF 持久化 |
+| **分散式** | ❌ 單實例限制 | ✅ 支援叢集、多實例 |
+| **成本** | ✅ $0 | ❌ $5+/月 |
+| **複雜度** | ✅ 原生 JS 支援 | ❌ 需額外套件、設定 |
+
+**結論：**
+- 階段 1 只有單一 Replit 實例，Map 已足夠
+- Bot 重啟頻率低（UptimeRobot 保活）
+- 階段 2 升級 VPS + Redis 實現分散式
+
+---
+
+### 9.3 計時器：setTimeout vs 任務隊列
+
+| 方案 | 優點 | 缺點 | 適用階段 |
+|------|------|------|----------|
+| **setTimeout**（當前）| 簡單、原生支援、零依賴 | 重啟遺失、記憶體常駐 | ✅ 階段 1 |
+| **Bull Queue**（未來）| 持久化、分散式、可重試 | 需 Redis、複雜度高 | 階段 2-3 |
+| **Cron Job**（備選）| 定時檢查、穩定 | 精度低（分鐘級）、資料庫掃描 | 階段 2 |
+
+**階段 1 實作（妥協方案）：**
+```javascript
+// Bot 重啟時嘗試重建計時器
+client.on('ready', () => {
+  console.log('Bot 啟動，檢查活躍房間...');
+  
+  activeRooms.forEach((room, roomId) => {
+    if (room.status === 'full' && room.closeAt) {
+      const remaining = new Date(room.closeAt) - Date.now();
+      
+      if (remaining > 0) {
+        // 重建計時器
+        setAutoCloseTimer(roomId);
+        console.log(`重建計時器: ${roomId}, 剩餘 ${remaining}ms`);
+      } else {
+        // 時間已過，立即關閉
+        closeRoom(roomId, '⏰ 時間到，房間已自動關閉');
+      }
+    }
+  });
+});
+```
+
+**限制：**
+- activeRooms Map 在記憶體中，重啟後會清空
+- 無法恢復 RECRUITING 狀態的殭屍房計時器（可接受）
+- 階段 2 遷移資料庫後可完全解決
+
+---
+
+### 9.4 跨伺服器方案選擇
+
+**為什麼選擇「中央招募頻道」而非其他方案？**
+
+| 方案 | 實作時間 | 用戶體驗 | 維護成本 | 擴展性 | MVP 適合度 |
+|------|---------|---------|---------|--------|-----------|
+| **中央頻道**（當前）| 2-3 小時 | ⭐⭐⭐⭐ | 低 | ⭐⭐⭐ | ✅ 最適合 |
+| **分散推播** | 3-5 小時 | ⭐⭐⭐ | 高（訊息重複）| ⭐⭐⭐⭐ | ⚠️ 過度設計 |
+| **Thread 模式** | 4-6 小時 | ⭐⭐⭐⭐⭐ | 低 | ⭐⭐⭐⭐ | ✅ 階段 2 考慮 |
+| **網頁介面** | 20+ 小時 | ⭐⭐⭐⭐⭐ | 高（需後端）| ⭐⭐⭐⭐⭐ | ❌ 階段 3 |
+
+**中央頻道優勢：**
+- 實作快速（符合 48 小時目標）
+- 無需資料庫（符合當前限制）
+- 易於管理（單一來源）
+- 成本 $0（只需建立一個 Discord 伺服器）
+
+**未來優化方向（階段 2）：**
+- 使用 Discord Thread 功能（按遊戲分類）
+- 加入搜尋/篩選功能
+- 整合網頁儀表板
+
+---
+
+### 9.5 檔案結構設計
+
+```
+personalink-bot/
+├─ index.js                 # 主程式（所有邏輯）
+├─ package.json             # 依賴設定
+├─ .env                     # 環境變數（TOKEN、中央伺服器 ID）
+│
+├─ logs.json                # 發車記錄（自動生成）
+├─ guildSettings.json       # 伺服器設定（自動生成）
+│
+└─ README.md                # 使用說明（選用）
+```
+
+**為什麼不拆分模組？**
+- 階段 1 程式碼預計 <500 行，單檔案易於維護
+- Replit 環境不適合複雜檔案結構
+- 避免過早抽象化
+- 階段 2 重構時再拆分（配合資料庫升級）
+
+---
+
+## 10. 實作檢查清單
+
+### 10.1 階段 1 核心功能（Week 1-2）
+
+#### Discord Bot 基礎設定
+- [ ] Discord Developer Portal 建立 Application
+- [ ] 獲取 Bot Token
+- [ ] 設定必要權限：
+  - [ ] Send Messages
+  - [ ] Embed Links
+  - [ ] Use Slash Commands
+  - [ ] Mention Everyone
+  - [ ] Read Message History
+- [ ] 啟用 MESSAGE CONTENT INTENT
+- [ ] 生成 OAuth2 邀請連結
+- [ ] 邀請 Bot 到測試伺服器
+
+#### Replit 環境設定
+- [ ] 建立 Node.js Repl
+- [ ] 設定 Secrets（DISCORD_TOKEN）
+- [ ] 安裝依賴：discord.js, express, dotenv
+- [ ] 配置 package.json
+- [ ] 測試 Express Keep-alive 伺服器
+
+#### 指令系統
+- [ ] 實作 `/開車` 斜線指令
+  - [ ] 遊戲選項（下拉選單或文字輸入）
+  - [ ] 人數選項（2-20）
+  - [ ] 備註選項（選填）
+- [ ] 實作 `/設定` 指令
+  - [ ] invite_url 子指令
+  - [ ] URL 格式驗證
+  - [ ] 儲存到 guildSettings.json
+
+#### 房間管理模組
+- [ ] createRoom() 函數
+  - [ ] 生成唯一 roomId
+  - [ ] 建立 roomData 物件
+  - [ ] 加入 activeRooms Map
+  - [ ] 發送公告到原始伺服器
+  - [ ] 推送到中央伺服器（如啟用）
+  - [ ] 設定殭屍房計時器
+- [ ] joinRoom() 函數
+  - [ ] 驗證房間存在
+  - [ ] 檢查重複加入
+  - [ ] 檢查房間是否已滿
+  - [ ] 更新 players 陣列
+  - [ ] 處理人滿邏輯
+  - [ ] 更新兩邊公告
+- [ ] leaveRoom() 函數
+  - [ ] 移除玩家
+  - [ ] 檢查是否為司機
+  - [ ] 處理未滿邏輯
+  - [ ] 更新公告
+- [ ] extendRoom() 函數
+  - [ ] 檢查延長次數
+  - [ ] 清除舊計時器
+  - [ ] 重設新計時器
+- [ ] closeRoom() 函數
+  - [ ] 清除所有計時器
+  - [ ] 更新公告為已結束
+  - [ ] 刪除中央訊息
+  - [ ] 設定刪除計時器
+  - [ ] 移除 activeRooms
+
+#### 按鈕互動處理
+- [ ] join_{roomId} 處理器
+  - [ ] 跨伺服器檢查（是否在原伺服器）
+  - [ ] 發送邀請提示（如需要）
+  - [ ] 執行 joinRoom()
+- [ ] leave_{roomId} 處理器
+  - [ ] 執行 leaveRoom()
+  - [ ] 司機取消特殊處理
+- [ ] extend_{roomId} 處理器
+  - [ ] 驗證司機身份
+  - [ ] 執行 extendRoom()
+- [ ] close_{roomId} 處理器
+  - [ ] 驗證司機身份
+  - [ ] 執行 closeRoom()
+
+#### 計時器系統
+- [ ] setZombieTimer() 實作
+  - [ ] 2 小時倒數
+  - [ ] 檢查玩家數量
+  - [ ] 自動關閉邏輯
+- [ ] setAutoCloseTimer() 實作
+  - [ ] 警告計時器（40 分鐘）
+  - [ ] 關閉計時器（45 分鐘）
+  - [ ] 狀態切換邏輯
+- [ ] clearAllTimers() 實作
+  - [ ] 清除所有房間相關計時器
+
+#### Embed 生成模組
+- [ ] createRecruitingEmbed()
+  - [ ] 綠色主題
+  - [ ] 顯示司機、人數、遊戲
+  - [ ] 顯示伺服器名稱
+- [ ] createFullEmbed()
+  - [ ] 紅色主題
+  - [ ] @ 所有玩家（僅原始伺服器）
+  - [ ] 顯示倒數計時
+- [ ] createEndingEmbed()
+  - [ ] 橘色主題
+  - [ ] 警告訊息
+- [ ] createClosedEmbed()
+  - [ ] 灰色主題
+  - [ ] 顯示關閉原因
+
+#### 跨伺服器功能
+- [ ] 建立 PersonaLink 官方伺服器
+- [ ] 設定 #全球招募 頻道
+- [ ] 在 .env 設定 CENTRAL_SERVER_ID 和 RECRUIT_CHANNEL_ID
+- [ ] postToCentralServer() 實作
+  - [ ] 發送公告
+  - [ ] 儲存 centralMessageId
+- [ ] updateCentralMessage() 實作
+  - [ ] 同步更新公告
+- [ ] deleteCentralMessage() 實作
+  - [ ] 立即刪除
+- [ ] isUserInGuild() 檢查函數
+- [ ] sendInvitePrompt() 邀請提示
+
+#### 資料記錄系統
+- [ ] saveLog() 實作
+  - [ ] 計算 duration 和 joinSpeed
+  - [ ] 建立 logEntry 物件
+  - [ ] 讀取 logs.json
+  - [ ] 附加新記錄
+  - [ ] 寫回檔案
+- [ ] 初始化 logs.json（如不存在）
+
+#### 檔案管理
+- [ ] loadGuildSettings() 實作
+- [ ] saveGuildSettings() 實作
+- [ ] getGuildInviteUrl() 實作
+- [ ] setGuildInviteUrl() 實作
+- [ ] 初始化 guildSettings.json（如不存在）
+
+#### 錯誤處理
+- [ ] Try-catch 包裹所有非同步操作
+- [ ] Discord API 失敗重試機制（3 次）
+- [ ] 訊息更新失敗的備援處理
+- [ ] 計時器錯誤捕捉
+- [ ] 檔案讀寫錯誤處理
+
+### 10.2 測試清單
+
+#### 基礎功能測試
+- [ ] `/開車` 指令能正常觸發
+- [ ] 公告正確顯示遊戲名稱、人數、司機
+- [ ] 按鈕可點擊且反應正常
+- [ ] 人數正確累加（1/5 → 2/5 → ...）
+- [ ] 重複點擊顯示錯誤提示
+- [ ] 人滿時自動 @ 所有成員（原始伺服器）
+- [ ] 按鈕正確禁用/啟用
+
+#### 跨伺服器測試
+- [ ] 中央伺服器正確接收公告
+- [ ] 公告內容與原始伺服器同步
+- [ ] 玩家在原伺服器可直接加入
+- [ ] 玩家不在原伺服器收到邀請提示
+- [ ] 邀請連結正確（可點擊加入）
+- [ ] 加入後可成功排隊
+- [ ] 兩邊公告同步更新
+
+#### 計時器測試
+- [ ] 殭屍房 2 小時後自動關閉（縮短時間測試）
+- [ ] 人滿後 45 分鐘自動關閉（縮短時間測試）
+- [ ] 最後 5 分鐘警告正確觸發
+- [ ] 公告顏色正確切換（綠→紅→橘→灰）
+- [ ] 延長時間功能正常
+- [ ] 延長次數限制生效
+- [ ] 關閉後 10 分鐘刪除公告
+
+#### 邊界情況測試
+- [ ] 已滿房間有人退出 → 回到招募狀態
+- [ ] 司機退出房間 → 立即關閉
+- [ ] 重複點擊加入 → 錯誤提示
+- [ ] 非司機點延長 → 錯誤提示
+- [ ] 延長次數用完 → 錯誤提示
+- [ ] 訊息被手動刪除 → 不崩潰
+- [ ] Discord API 失敗 → 正確重試
+
+#### 壓力測試
+- [ ] 多個房間同時運行（5+ 個）
+- [ ] 10+ 人快速點擊按鈕
+- [ ] 長時間運行穩定性（24 小時）
+- [ ] 高頻發車（每分鐘 1 個房間）
+
+#### 數據驗證
+- [ ] logs.json 正確記錄完成房間
+- [ ] 數據格式正確（JSON 有效）
+- [ ] 統計數據準確（duration, joinSpeed）
+- [ ] guildSettings.json 正確儲存設定
+
+### 10.3 部署檢查清單
+
+- [ ] Replit 專案設定完成
+- [ ] .env 包含所有必要變數
+  - [ ] DISCORD_TOKEN
+  - [ ] CENTRAL_SERVER_ID
+  - [ ] RECRUIT_CHANNEL_ID
+- [ ] package.json 依賴正確
+- [ ] Express 伺服器正常運行
+- [ ] UptimeRobot 設定監控
+  - [ ] HTTP(S) Monitor
+  - [ ] 5 分鐘間隔
+  - [ ] 監控 Replit URL
+- [ ] Bot 顯示在線狀態
+- [ ] 測試 24/7 運行
+- [ ] 確認重啟後自動恢復
+
+### 10.4 文檔檢查清單
+
+- [ ] README.md 包含使用說明
+- [ ] 指令列表文檔
+- [ ] 中央伺服器使用規則
+- [ ] 管理員設定指南
+- [ ] 常見問題 FAQ
+- [ ] 錯誤處理說明
+
+---
+
+## 11. 關鍵指標追蹤
+
+### 11.1 產品指標（可從 logs.json 計算）
+
+#### 基礎統計
+```javascript
+// 從 logs.json 讀取後計算
+const stats = {
+  // 使用量
+  totalRooms: logs.length,                    // 總發車數
+  activeGuilds: new Set(logs.map(l => l.guildId)).size,  // 活躍伺服器數
+  totalPlayers: new Set(logs.flatMap(l => l.players)).size,  // 總參與玩家數
+  
+  // 效率
+  avgFillTime: avg(logs.map(l => l.joinSpeed)),         // 平均招滿時間（秒）
+  fillRate: logs.filter(l => l.finalPlayerCount === 5).length / logs.length,  // 招滿率
+  
+  // 遊戲分布
+  gameDistribution: countBy(logs, 'game'),    // 各遊戲發車次數
+  
+  // 時間分布
+  peakHours: groupByHour(logs),               // 高峰時段
+  
+  // 留存
+  returningDrivers: countReturningUsers(logs, 'driver'),  // 重複發車司機
+  
+  // 品質
+  avgRoomDuration: avg(logs.map(l => l.duration)),  // 平均房間存在時間
+  avgPlayersPerRoom: avg(logs.map(l => l.finalPlayerCount))  // 平均人數
+};
+```
+
+#### 簡易統計函數（可選實作）
+```javascript
+// 讀取統計資料
+function getStats() {
+  if (!fs.existsSync('logs.json')) {
+    return null;
+  }
+  
+  const data = fs.readFileSync('logs.json', 'utf8');
+  const logs = JSON.parse(data);
+  
+  return {
+    totalRooms: logs.length,
+    totalGuilds: new Set(logs.map(l => l.guildId)).size,
+    totalPlayers: new Set(logs.flatMap(l => l.players)).size,
+    avgJoinSpeed: avg(logs.map(l => l.joinSpeed)),
+    topGames: topN(countBy(logs, 'game'), 5)
+  };
+}
+
+// 輔助函數
+function avg(arr) {
+  return arr.reduce((a, b) => a + b, 0) / arr.length;
+}
+
+function countBy(arr, key) {
+  return arr.reduce((acc, item) => {
+    const k = item[key];
+    acc[k] = (acc[k] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function topN(obj, n) {
+  return Object.entries(obj)
+    .sort(([,a], [,b]) => b - a)
+    .slice(0, n);
+}
+```
+
+### 11.2 監控指標（程式運行時）
+
+```javascript
+// 在主程式中追蹤
+const metrics = {
+  // 即時狀態
+  activeRoomsCount: () => activeRooms.size,
+  recruitingRooms: () => countByStatus('recruiting'),
+  fullRooms: () => countByStatus('full'),
+  
+  // 效能
+  uptimeSeconds: () => process.uptime(),
+  memoryUsage: () => process.memoryUsage().heapUsed / 1024 / 1024,  // MB
+  
+  // 錯誤追蹤
+  errorCount: 0,
+  lastError: null
+};
+
+function countByStatus(status) {
+  let count = 0;
+  activeRooms.forEach(room => {
+    if (room.status === status) count++;
+  });
+  return count;
+}
+
+// Express 端點顯示監控資訊
+app.get('/metrics', (req, res) => {
+  res.json({
+    activeRooms: metrics.activeRoomsCount(),
+    recruiting: metrics.recruitingRooms(),
+    full: metrics.fullRooms(),
+    uptime: metrics.uptimeSeconds(),
+    memoryMB: metrics.memoryUsage(),
+    errors: metrics.errorCount
+  });
+});
+```
+
+### 11.3 目標指標（Week 1-4）
+
+| 指標 | Week 1 目標 | Week 2 目標 | Week 4 目標 |
+|------|------------|------------|------------|
+| 總發車數 | 10+ | 50+ | 200+ |
+| 活躍伺服器 | 2-3 | 5-10 | 15-20 |
+| 平均招滿時間 | <30 分鐘 | <15 分鐘 | <10 分鐘 |
+| 招滿率 | >30% | >50% | >70% |
+| 重複發車率 | >20% | >40% | >60% |
+| Bot 在線率 | >95% | >98% | >99% |
+
+### 11.4 數據匯出（選用功能）
+
+```javascript
+// 生成報表（可手動觸發）
+function generateReport(startDate, endDate) {
+  const logs = readLogs();
+  
+  const filtered = logs.filter(log => {
+    const date = new Date(log.createdAt);
+    return date >= startDate && date <= endDate;
+  });
+  
+  const report = {
+    period: { start: startDate, end: endDate },
+    summary: {
+      totalRooms: filtered.length,
+      uniqueDrivers: new Set(filtered.map(l => l.driver)).size,
+      uniquePlayers: new Set(filtered.flatMap(l => l.players)).size,
+      avgJoinSpeed: avg(filtered.map(l => l.joinSpeed))
+    },
+    byGame: countBy(filtered, 'game'),
+    byGuild: countBy(filtered, 'guildName'),
+    topDrivers: topDrivers(filtered, 10)
+  };
+  
+  // 儲存或輸出報表
+  fs.writeFileSync(
+    `report_${startDate.toISOString().slice(0,10)}.json`,
+    JSON.stringify(report, null, 2)
+  );
+  
+  return report;
+}
+```
+
+---
+
+## 12. 附錄
+
+### 12.1 環境變數範例
+
+**.env 檔案內容：**
+```env
+# Discord Bot Token（必填）
+DISCORD_TOKEN=MTQ5NjI1MDM0NzQ5MTI2MTc0.GxTgua.5qo8JJ58m4o8j7rNw1YMXvJeA-xT9qg5qoJJsM
+
+# 中央伺服器設定（選填，不啟用跨伺服器可留空）
+CENTRAL_SERVER_ID=1234567890123456789
+RECRUIT_CHANNEL_ID=9876543210987654321
+
+# Express 伺服器端口（選填，預設 3000）
+PORT=3000
+```
+
+### 12.2 常數設定範例
+
+```javascript
+// 時間設定（毫秒）
+const TIMEOUT_CONFIG = {
+  ZOMBIE_ROOM_TIMEOUT: 2 * 60 * 60 * 1000,   // 2 小時
+  FULL_ROOM_DURATION: 45 * 60 * 1000,        // 45 分鐘
+  WARNING_TIME: 5 * 60 * 1000,               // 5 分鐘
+  EXTEND_TIME: 30 * 60 * 1000,               // 30 分鐘
+  DELETE_DELAY: 10 * 60 * 1000,              // 10 分鐘
+  MAX_EXTENDS: 2                             // 最多延長 2 次
+};
+
+// 功能開關
+const FEATURES = {
+  ENABLE_CROSS_SERVER: true,                 // 啟用跨伺服器
+  ENABLE_AUTO_CLOSE: true,                   // 啟用自動關閉
+  ENABLE_GUILD_SETTINGS: true                // 啟用伺服器設定
+};
+
+// 限制設定
+const LIMITS = {
+  MIN_PLAYERS: 2,
+  MAX_PLAYERS: 20,
+  MAX_CONCURRENT_ROOMS_PER_USER: 1
+};
+
+// 顏色設定
+const COLORS = {
+  RECRUITING: '#00ff00',  // 綠色
+  FULL: '#ff0000',        // 紅色
+  ENDING: '#ff9900',      // 橘色
+  CLOSED: '#808080'       // 灰色
+};
+```
+
+### 12.3 遊戲選項範例
+
+```javascript
+const GAME_CHOICES = [
+  { name: '🎮 傳說對決', value: '傳說對決' },
+  { name: '🎮 英雄聯盟', value: '英雄聯盟' },
+  { name: '🎮 APEX Legends', value: 'APEX' },
+  { name: '🎮 絕地求生', value: 'PUBG' },
+  { name: '🎮 特戰英豪', value: 'VALORANT' },
+  { name: '🎮 鬥陣特攻 2', value: '鬥陣特攻' },
+  { name: '🎮 CS2', value: 'CS2' },
+  { name: '🎮 要塞英雄', value: 'Fortnite' },
+  { name: '🎮 虹彩六號', value: 'R6S' },
+  { name: '🎯 其他遊戲', value: '其他' }
+];
+```
+
+### 12.4 錯誤訊息範例
+
+```javascript
+const ERROR_MESSAGES = {
+  ROOM_NOT_FOUND: '❌ 房間不存在或已關閉',
+  ALREADY_IN_ROOM: '⚠️ 你已經在隊伍中了',
+  ROOM_FULL: '❌ 房間已滿',
+  NOT_IN_ROOM: '⚠️ 你不在隊伍中',
+  NOT_DRIVER: '❌ 只有司機可以執行此操作',
+  MAX_EXTENDS_REACHED: '❌ 已達延長次數上限',
+  INVALID_INVITE_URL: '❌ 邀請連結格式錯誤',
+  NOT_IN_GUILD: '⚠️ 你需要先加入該伺服器才能排隊',
+  SYSTEM_ERROR: '❌ 系統錯誤，請稍後再試'
+};
+```
+
+---
+
+## 13. 總結與下一步
+
+### 13.1 當前設計優勢
+
+✅ **零資料庫依賴** - 使用 JSON + In-Memory 完成所有功能  
+✅ **快速部署** - Replit 一鍵運行，無需複雜設定  
+✅ **低成本** - 完全免費（除非需要升級 Replit 方案）  
+✅ **模組化** - 易於擴展和維護  
+✅ **可擴展** - 預留未來升級路徑  
+
+### 13.2 已知限制
+
+⚠️ **Bot 重啟** - activeRooms 會遺失（階段 1 可接受）  
+⚠️ **計時器恢復** - 重啟後計時器需手動重建  
+⚠️ **查詢能力** - 無法執行複雜統計查詢（logs.json 需全部載入）  
+⚠️ **並發限制** - 單一 Replit 實例有效能上限  
+
+### 13.3 立即行動（本週）
+
+1. **完成核心功能開發**
+   - 實作所有模組
+   - 完成單元測試
+   - 修復所有 Bug
+
+2. **建立中央伺服器**
+   - 設定頻道結構
+   - 撰寫使用說明
+   - 測試跨伺服器功能
+
+3. **部署與監控**
+   - 設定 UptimeRobot
+   - 確保 24/7 運行
+   - 監控錯誤日誌
+
+### 13.4 下週目標（Week 2）
+
+1. 完整測試（10+ 真實用戶）
+2. 收集反饋並優化
+3. 錄製 Demo 影片
+4. 開始接觸潛在客戶
+
+### 13.5 資料庫就緒後的升級路徑
+
+**Month 2（資料庫可用後）：**
+1. PostgreSQL Schema 設計與建立
+2. 資料遷移腳本（JSON → SQL）
+3. 雙寫模式測試（1 週）
+4. 完全切換到資料庫
+5. 實作進階功能（戰隊、評價、統計）
+
+---
+
+## 附件：快速參考
+
+### Discord.js 重要常數
+```javascript
+// Intents
+GatewayIntentBits.Guilds
+GatewayIntentBits.GuildMessages
+GatewayIntentBits.MessageContent
+
+// Button Styles
+ButtonStyle.Primary    // 藍色
+ButtonStyle.Secondary  // 灰色
+ButtonStyle.Success    // 綠色
+ButtonStyle.Danger     // 紅色
+ButtonStyle.Link       // 連結按鈕
+
+// Embed Colors
+0x00ff00  // 綠色（招募中）
+0xff0000  // 紅色（已滿）
+0xff9900  // 橘色（即將結束）
+0x808080  // 灰色（已結束）
+```
+
+### 常用 Discord API
+```javascript
+// 獲取頻道
+await client.channels.fetch(channelId)
+
+// 獲取訊息
+await channel.messages.fetch(messageId)
+
+// 編輯訊息
+await message.edit({ embeds, components })
+
+// 刪除訊息
+await message.delete()
+
+// 獲取伺服器
+await client.guilds.fetch(guildId)
+
+// 獲取成員
+await guild.members.fetch(userId)
+
+// 回應互動
+await interaction.reply({ content, ephemeral: true })
+await interaction.update({ embeds, components })
+```
+
+---
+
+**文檔完成！準備好提供給 Discord-Bot-Guard 或開發團隊使用。** 🚀
+
+有任何需要補充或修改的地方嗎？
