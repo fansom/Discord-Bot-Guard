@@ -31,6 +31,50 @@ const PORT = process.env.PORT || 3000;
 // ===== 資料儲存 =====
 let activeRooms = new Map(); // 儲存活躍房間資料
 
+// ===== 自動補全建議清單 =====
+const GAME_SUGGESTIONS = [
+  "傳說對決",
+  "英雄聯盟",
+  "激鬥峽谷",
+  "Valorant",
+  "特戰英豪",
+  "Apex Legends",
+  "PUBG",
+  "絕地求生",
+  "CS2",
+  "Overwatch 2",
+  "鬥陣特攻 2",
+  "爐石戰記",
+  "暗黑破壞神 4",
+  "暗黑破壞神:不朽",
+  "原神",
+  "崩壞:星穹鐵道",
+  "鳴潮",
+  "第五人格",
+  "決勝時刻",
+  "Minecraft",
+  "瑪利歐賽車",
+  "任天堂明星大亂鬥",
+];
+
+const RULE_SUGGESTIONS = [
+  "限有麥",
+  "不限段位",
+  "限白金以上",
+  "限鑽石以上",
+  "限大師以上",
+  "新手友善",
+  "純娛樂",
+  "認真上分",
+  "限女生",
+  "限男生",
+  "禁掛機",
+  "禁辱罵",
+  "歡迎新手",
+  "排位賽",
+  "歡樂場",
+];
+
 // ===== Express 伺服器 (保持 Replit 運行) =====
 app.get("/", (req, res) => {
   res.send("✅ PersonaLink Bot is running!");
@@ -52,8 +96,9 @@ client.once("ready", async () => {
       .addStringOption((option) =>
         option
           .setName("遊戲")
-          .setDescription("遊戲名稱 (預設: 未指定)")
-          .setRequired(false),
+          .setDescription("遊戲名稱 (可從建議選擇或自行輸入)")
+          .setRequired(false)
+          .setAutocomplete(true),
       )
       .addIntegerOption((option) =>
         option
@@ -66,8 +111,9 @@ client.once("ready", async () => {
       .addStringOption((option) =>
         option
           .setName("規定")
-          .setDescription("房間規定 (例如: 限有麥、不限段位)")
-          .setRequired(false),
+          .setDescription("房間規定 (可從建議選擇或自行輸入)")
+          .setRequired(false)
+          .setAutocomplete(true),
       ),
   ].map((command) => command.toJSON());
 
@@ -82,6 +128,29 @@ client.once("ready", async () => {
   } catch (error) {
     console.error("❌ 指令註冊失敗:", error);
   }
+});
+
+// ===== 自動補全處理 =====
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isAutocomplete()) return;
+
+  const focused = interaction.options.getFocused(true);
+  const input = (focused.value || "").toLowerCase();
+
+  let pool = [];
+  if (focused.name === "遊戲") pool = GAME_SUGGESTIONS;
+  else if (focused.name === "規定") pool = RULE_SUGGESTIONS;
+
+  // 過濾建議：依輸入內容比對；輸入空字串則顯示前 25 筆
+  const filtered = (
+    input
+      ? pool.filter((item) => item.toLowerCase().includes(input))
+      : pool
+  ).slice(0, 25);
+
+  await interaction.respond(
+    filtered.map((item) => ({ name: item, value: item })),
+  );
 });
 
 // ===== /開車 指令處理 =====
