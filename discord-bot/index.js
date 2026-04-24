@@ -52,8 +52,8 @@ client.once("ready", async () => {
       .addStringOption((option) =>
         option
           .setName("遊戲")
-          .setDescription("遊戲名稱 (例如: 傳說對決、英雄聯盟)")
-          .setRequired(true),
+          .setDescription("遊戲名稱 (預設: 未指定)")
+          .setRequired(false),
       )
       .addIntegerOption((option) =>
         option
@@ -89,7 +89,7 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === "開車") {
-    const gameName = interaction.options.getString("遊戲");
+    const gameName = interaction.options.getString("遊戲") || "未指定";
     const maxPlayers = interaction.options.getInteger("人數") || 5;
     const rules = interaction.options.getString("規定") || "無";
     const driver = interaction.user;
