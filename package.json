@@ -1,8 +1,11 @@
 {
-  "name": "workspace",
-  "version": "0.0.0",
+  "name": "personalink-bot",
+  "version": "1.0.0",
+  "description": "Discord 自動發車 Bot",
+  "main": "index.js",
   "license": "MIT",
   "scripts": {
+    "start": "node index.js"
     "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
@@ -10,6 +13,9 @@
   },
   "private": true,
   "devDependencies": {
+    "discord.js": "^14.14.1",
+    "express": "^4.18.2",
+    "dotenv": "^16.3.1"
     "typescript": "~5.9.2",
     "prettier": "^3.8.1"
   }
