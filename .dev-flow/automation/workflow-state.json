@@ -1,0 +1,14 @@
+{
+  "workflow_id": null,
+  "status": "idle",
+  "total_tasks": 0,
+  "completed_tasks": 0,
+  "current_cycle": 0,
+  "current_actor": null,
+  "current_task": null,
+  "started_at": null,
+  "last_updated": null,
+  "retry_count": 0,
+  "max_retries": 3,
+  "errors": []
+}
