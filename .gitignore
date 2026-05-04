@@ -47,3 +47,7 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+task.json
+.gitignore
+file-watcher.ps1
+claude-task-watcher.ps1
