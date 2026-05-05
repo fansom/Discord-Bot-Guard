@@ -1,84 +1,31 @@
----
+﻿---
 task_id: task-002
-status: ready
-assigned_to: claude_code
-created: 2026-05-04
-depends_on: [task-001]
-estimated_lines: 220
+title: Design Express API Contract
+priority: P0
+estimated_time: 45 min
+dependencies: task-001
+created: 2026-05-05T17:58:37.4141671+08:00
 ---
 
-# Task: Implement Message Spam Filtering
+# Task: Design Express API Contract
 
-## Objective
-
-Add automatic spam-message detection and enforcement to Discord Bot Guard so guild messages can be evaluated, logged, and handled according to configurable thresholds.
-
-## Context
-
-The spec requires automatic detection and handling of spam messages. This task builds on the baseline `messageCreate` flow from task-001 and should keep the first moderation rules simple, testable, and configurable.
-
-## Allowed Files
-
-- `discord-bot/index.js`
-- `discord-bot/settings.json`
-- `discord-bot/logs.json`
-- `.dev-flow/tasks/task-002.md`
-
-## Forbidden Files
-
-- `.ai-harness/policies/`
-- `.ai-harness/templates/`
-- `.ai-harness/schemas/`
-- `ai-harness-source`
-- `.env`
-- `*.key`
-- `*.pem`
-- `.github/workflows/`
-- root `package.json`
-- lockfiles
-- `CLAUDE.md`
+## Description
+Define the HTTP API endpoints, request formats, response formats, status codes, and validation rules required by the feature.
 
 ## Requirements
+- [ ] Identify required Express.js routes
+- [ ] Define request body and query parameter schemas
+- [ ] Define success and error responses
+- [ ] Specify authentication or authorization requirements if applicable
 
-- Detect basic spam indicators:
-  - repeated identical messages by the same user in a short window
-  - excessive message rate by the same user in a short window
-  - repeated mentions above a configurable threshold
-- Ignore bot messages and direct messages.
-- Attempt to delete offending messages only when the bot has permission.
-- Record moderation events to `logs.json` with timestamp, guild ID, channel ID, user ID, action, reason, and message metadata.
-- Keep thresholds in `settings.json` with sane defaults if no settings exist.
-- Fail gracefully when message deletion is not permitted.
-- Do not introduce SQLite in this task unless package-change approval has already been granted.
+## Technical Specifications
+Produce an API contract for Express.js using JSON request and response bodies. Include validation constraints, HTTP status codes, and error response structure.
 
-## Acceptance Criteria
+## Estimated Time
+45 min
 
-- [ ] Spam checks are deterministic and easy to review in code.
-- [ ] A repeated-message spam case can trigger a logged `delete_message` action.
-- [ ] A high-rate message case can trigger a logged moderation event.
-- [ ] Mention spam can trigger a logged moderation event.
-- [ ] Permission failures are logged or warned without crashing the bot.
-- [ ] `node --check discord-bot/index.js` passes.
+## Dependencies
+task-001
 
-## Validation Commands
-
-```bash
-node --check discord-bot/index.js
-```
-
-Manual validation:
-
-```bash
-cd discord-bot
-npm start
-```
-
-Then send test messages in a private test guild.
-
-## Implementation Notes
-
-Prefer small helper functions for rate tracking, repeated-message detection, mention counting, and event logging. Use in-memory windows for task-002; durable storage can be added later when SQLite dependency approval is resolved.
-
-## Review Notes
-
-To be completed by Codex.
+## Priority
+P0

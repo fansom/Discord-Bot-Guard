@@ -1,79 +1,31 @@
----
+﻿---
 task_id: task-001
-status: ready
-assigned_to: claude_code
-created: 2026-05-04
-depends_on: []
-estimated_lines: 180
+title: Clarify Feature Scope and Success Criteria
+priority: P0
+estimated_time: 30 min
+dependencies: 
+created: 2026-05-05T17:58:37.3987001+08:00
 ---
 
-# Task: Establish Guard Bot Runtime Baseline
+# Task: Clarify Feature Scope and Success Criteria
 
-## Objective
-
-Replace the existing legacy team-up bot entrypoint with a runnable Discord Bot Guard baseline that connects to Discord, validates required configuration, registers core Discord.js event handlers, and provides a stable foundation for moderation, admin commands, and logging.
-
-## Context
-
-The updated spec requires a Discord.js v14 bot for server management and security protection. The current `discord-bot/index.js` appears to be an unrelated cross-server team-up bot and contains mojibake plus JavaScript syntax errors. Before moderation features can be added, the runtime must be simplified into a working guard bot skeleton.
-
-## Allowed Files
-
-- `discord-bot/index.js`
-- `discord-bot/settings.json`
-- `discord-bot/logs.json`
-- `.dev-flow/tasks/task-001.md`
-
-## Forbidden Files
-
-- `.ai-harness/policies/`
-- `.ai-harness/templates/`
-- `.ai-harness/schemas/`
-- `ai-harness-source`
-- `.env`
-- `*.key`
-- `*.pem`
-- `.github/workflows/`
-- root `package.json`
-- lockfiles
-- `CLAUDE.md`
+## Description
+Resolve missing feature name, description, concrete requirements, acceptance criteria, and notes before implementation begins.
 
 ## Requirements
+- [ ] Replace placeholder feature title with a concrete feature name
+- [ ] Define the intended user or system behavior
+- [ ] Convert placeholder requirements into verifiable functional requirements
+- [ ] Define measurable acceptance criteria
 
-- Use Discord.js v14 APIs already available in `discord-bot/package.json`.
-- Keep the Express keep-alive endpoint only if it remains minimal and does not hide startup failures.
-- Validate `DISCORD_TOKEN` before calling `client.login`.
-- Create a Discord client with intents needed for guilds, guild messages, message content, and member moderation workflows.
-- Add `ready`, `error`, and `warn` handlers with clear console output.
-- Add a placeholder `messageCreate` guard flow that ignores bot messages and DMs, but does not yet enforce filtering.
-- Preserve JSON files as valid JSON.
-- Do not add new dependencies in this task.
+## Technical Specifications
+Create a finalized requirements document covering API behavior, data model expectations, error handling, security considerations, and validation rules for a Node.js 18+, Express.js, PostgreSQL 14+ stack.
 
-## Acceptance Criteria
+## Estimated Time
+30 min
 
-- [ ] `node --check discord-bot/index.js` passes.
-- [ ] Starting the bot without `DISCORD_TOKEN` fails fast with a clear message and does not attempt Discord login.
-- [ ] The bot can log a successful `ready` event when valid Discord credentials are provided.
-- [ ] `discord-bot/settings.json` and `discord-bot/logs.json` remain valid JSON.
-- [ ] No Harness governance assets are modified.
+## Dependencies
 
-## Validation Commands
 
-```bash
-node --check discord-bot/index.js
-```
-
-Manual validation with credentials:
-
-```bash
-cd discord-bot
-npm start
-```
-
-## Implementation Notes
-
-Prefer a small, readable CommonJS implementation because the existing bot package uses `index.js` and does not define ESM mode. Do not implement spam filtering, slash commands, or SQLite persistence yet; this task is the runtime baseline only.
-
-## Review Notes
-
-To be completed by Codex.
+## Priority
+P0

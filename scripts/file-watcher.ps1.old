@@ -1,0 +1,45 @@
+﻿# ============================================
+# File Watcher - Spec Monitor
+# ============================================
+
+. "$PSScriptRoot/utils/logger.ps1"
+
+$config = @{
+    WatchPath = ".dev-flow/spec.md"
+    OutputDir = ".dev-flow/tasks"
+    HandoffDir = ".dev-flow/handoff"
+    PollInterval = 5
+}
+
+$script:lastHash = $null
+
+Write-Log "File watcher started - monitoring spec.md" "INFO"
+
+while ($true) {
+    try {
+        if (-not (Test-Path $config.WatchPath)) {
+            Start-Sleep -Seconds $config.PollInterval
+            continue
+        }
+        
+        $currentHash = (Get-FileHash $config.WatchPath -Algorithm MD5).Hash
+        
+        if ($currentHash -ne $script:lastHash) {
+            Write-Log "Spec change detected!" "INFO"
+            
+            # TODO: 呼叫 Codex API 分析需求
+            # $specContent = Get-Content $config.WatchPath -Raw
+            # $tasks = Invoke-CodexAnalysis -SpecContent $specContent
+            
+            Write-Log "TODO: Implement Codex API call" "WARN"
+            
+            $script:lastHash = $currentHash
+        }
+        
+        Start-Sleep -Seconds $config.PollInterval
+        
+    } catch {
+        Write-Log "Error: $_" "ERROR"
+        Start-Sleep -Seconds $config.PollInterval
+    }
+}

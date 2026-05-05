@@ -53,3 +53,6 @@ file-watcher.ps1
 claude-task-watcher.ps1
 discord-bot/.env
 discord-bot/.env
+
+#tasks
+.dev-flow\handoff

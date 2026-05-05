@@ -1,0 +1,47 @@
+﻿{
+  "version": "1.0.0",
+  "system": {
+    "poll_interval_seconds": 5,
+    "max_retries": 3,
+    "api_timeout_seconds": 60,
+    "log_retention_days": 30
+  },
+  "ai_agents": {
+    "codex": {
+      "model": "o1-preview",
+      "max_tokens": 4000,
+      "temperature": 1
+    },
+    "claude_code": {
+      "timeout_minutes": 10,
+      "rate_limit_per_day": 25,
+      "reset_time": "23:10"
+    },
+    "minimax": {
+      "model": "minimax-m2.7",
+      "max_tokens": 2000,
+      "context_limit": 10000
+    }
+  },
+  "verification": {
+    "criteria": {
+      "requirements_compliance": 40,
+      "code_quality": 25,
+      "test_coverage": 20,
+      "documentation": 10,
+      "security": 5
+    },
+    "thresholds": {
+      "approved": 75,
+      "revision_needed": 60
+    }
+  },
+  "paths": {
+    "spec_file": ".dev-flow/spec.md",
+    "tasks_dir": ".dev-flow/tasks",
+    "handoff_dir": ".dev-flow/handoff",
+    "verification_dir": ".dev-flow/verification",
+    "results_dir": ".dev-flow/results",
+    "logs_dir": ".dev-flow/logs"
+  }
+}

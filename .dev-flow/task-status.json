@@ -1,0 +1,19 @@
+﻿{
+  "version": "1.0",
+  "last_updated": "2026-05-05T12:40:00.4922126+08:00",
+  "statistics": {
+    "total_tasks": 0,
+    "completed": 0,
+    "in_progress": 0,
+    "pending": 0,
+    "failed": 0,
+    "blocked": 0
+  },
+  "verification_stats": {
+    "approved": 0,
+    "revision_needed": 0,
+    "rejected": 0,
+    "avg_quality_score": 0
+  },
+  "tasks": {}
+}
